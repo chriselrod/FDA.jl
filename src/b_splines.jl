@@ -1,6 +1,6 @@
 abstract type Knots{p} end
 
-#Base.@pure Base.Val(T) = Val{T}()
+Base.@pure Base.Val(T) = Val{T}()
 
 
 ###why even have this? Why not untype?
@@ -19,13 +19,13 @@ struct DiscreteKnots{p,T} <: Knots{p}
     v::Vector{T}
     n::Int
 end
-function CardinalKnots(x::Vector{T}, n::Int, ::Val{p}) where {p,T}
+function CardinalKnots(x::Vector{T}, k::Int, ::Val{p}) where {p,T}
     miv = minimum(x)
     mav = maximum(x)
-    nm1 = n - 1
+    nm1 = k - p
     δ = (mav - miv)/ nm1
     δpoo5 = δ * 0.005
-    CardinalKnots{p,S}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, n)
+    CardinalKnots{p,T}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, nm1+1)
 end
 function CardinalKnots(minval::T, maxval::T, n::Int, ::Val{p}) where {p,T}
     S = promote_type(T, Float64)
@@ -53,7 +53,15 @@ end
 DiscreteKnots(v::StepRangeLen, ::Val{p}) where p = CardinalKnots{p,Float64}(v[1], v[end], convert(Float64, v.step), length(v))
 
 
-@inline Base.getindex(t::CardinalKnots{p}, i) where p = t.min + (i - p - 1) * t.v
+@inline function Base.getindex(t::CardinalKnots{p,T}, i)::T where {p,T}
+    impm1 = i - p - 1
+    if impm1 <= 0
+        return t.min
+    elseif impm1 >= knots.n - 1
+        return t.max
+    end
+    t.min + impm1 * t.v
+end
 @inline Base.getindex(t::DiscreteKnots, i) = t.v[i]
 
 
@@ -71,7 +79,7 @@ end
 """
 k is the number of basis.
 """
-function BSpline(x::Vector, y::Vector, v::Vector, vp::Val = Val{3}())
+function BSpline(x::Vector, y::Vector, v::Vector, vp::Val{p} = Val{3}()) where p
     knots = DiscreteKnots(v, vp)
     k = length(knots.v) - p - 1
     BSpline(x, y, k, knots)
@@ -81,12 +89,16 @@ function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),5), ::Val{p} = 
     BSpline(x, y, k, CardinalKnots(x, k, Val{p}()))
 end
 
-function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),5), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
+function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     n = length(x)
-    Φt = zeros(k, n)
+    Φt = zeros(promote_type(T, Float64), k, n)
     vector_buffer = Vector{T}(p+1)
     matrix_buffer = Matrix{T}(p,p)
     fillΦ!(Φt, matrix_buffer, x, knots)
+    Φt, y, knots, vector_buffer
+end
+
+function tf(Φt, y, knots, vector_buffer)
     f, b, ssr = Base.LinAlg.LAPACK.gels!('T', Φt, y)
     BSpline(knots, [b], ssr, vector_buffer)
 end
@@ -145,17 +157,17 @@ end
 penalty_matrix(k, p) = penalty_matrix!(Matrix{Float64}(k, k), zeros(p+1), k, p)
 
 @inline find_k(t::DiscreteKnots, x) = searchsortedfirst(t.v, x)
-@inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(x - t.min, t.v)) + p
+@inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
 
 
 deBoor(x, t::Knots{p}, c, k = find_k(t, x)) where p = deBoor(x, t, c, Val{p}(), k)
-deBoor(x::T, t, c, vp::Val{p}, k = find_k(t, x)) where {p,T} = deBoor!(Vector{T}(p+1), x, t, c, vp, k)
+deBoor(x::T, t, c, vp::Val{p}, k = find_k(t, x)) where {p,T} = deBoor!(Vector{promote_type(Float64,T)}(p+1), x, t, c, vp, k)
 
 function deBoor!(d::Vector, x, t::Knots{q}, c, vp::Val{p}, k = find_k(t, x)) where {p, q}
     for j ∈ 1:p+1
         d[p+2-j] = c[j+k-q-2]
     end
-    deBoorCore!(d, x, t, c, k, vp)
+    deBoorCore!(d, x, t, c, vp, k)
     d[1]
 end
 
@@ -182,24 +194,24 @@ end
 
 function sorteddeBoor!(out::Vector, d::Vector, x::Vector, t::Knots{q}, c, Vp::Val{p}) where {q, p}
     k = q+2
-    t_next = t.v[k]
+    t_next = t[k]
     for i ∈ eachindex(x)
         xᵢ = x[i]
         while xᵢ > t_next
             k += 1
-            t_next = t.v[k]
+            t_next = t[k]
         end
         for j ∈ 1:p+1
             d[p+2-j] = c[j+k-p-2]
         end
-        deBoorCore!(d, xᵢ, t, c, k, Vp)
+        deBoorCore!(d, xᵢ, t, c, Vp, k)
         out[i] = d[1]
     end
     out
 end
 
 
-function fillΦ2!(d, x, t, p, k = searchsortedfirst(t, x))
+function fillΦ2!(d, x, t, p, k = find_k(t, x))
   for r ∈ 1:p
     for j ∈ p:-1:r
       α = (x - t[j+k-p-1]) / (t[j+k-r] - t[j+k-p-1])
@@ -210,10 +222,10 @@ function fillΦ2!(d, x, t, p, k = searchsortedfirst(t, x))
   end
   d[:,p+1]
 end
-@inline fillΦ(x, t, p, k = searchsortedfirst(t, x)) = fillΦ2!(eye(p+1), x, t, p, k)
+@inline fillΦ(x, t, p, k = find_k(t, x)) = fillΦ2!(eye(p+1), x, t, p, k)
 
 ###Faster version? May as well set d...
-function fillΦ!(d, x, t, p, k = searchsortedfirst(t, x))
+function fillΦ!(d, x, t, p, k = find_k(t, x))
   fill!(d, 0.0)
   for i ∈ 1:p+1
       d[i,i] = 1.0
@@ -240,15 +252,27 @@ function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::DiscreteKnots{p}
             t_next = t[k]
         end
         fill!(d, zero(T))
-        ind = 2
+        ind = 1
         for j ∈ 1:p
             ind += p - 1
             d[ind] = one(T)
         end
-        for r ∈ 1:p
+        α = (xᵢ - t[k-1]) / (t[p+k-1] - t[k-1])
+        Φt[k-2,i] = 1-α
+        Φt[k-1,i] = α
+
+        for j ∈ 2:p
+            α = (xᵢ - t[k-j]) / (t[p+k-j] - t[k-j])
+            omα = 1-α
+            for l ∈ p+1-j:p+2-j
+                d[l,j-1] = α*d[l,j-1] + omα*d[l,j]
+            end
+        end
+        for r ∈ 2:p
             α = (xᵢ - t[k-1]) / (t[p+k-r] - t[k-1])
             omα = 1-α
-            for l ∈ 1+p-r:p
+            Φt[k-r-1,i] = omα*d[l]
+            for l ∈ 2+p-r:p
                 Φt[l+k-p-2,i] = α*Φt[l+k-p-2,i] + omα*d[l]
             end
             Φt[k-1,i] *= α
@@ -265,7 +289,7 @@ function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::DiscreteKnots{p}
 end
 
 
-function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}) where {T, p}
+function sorted_fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}) where {T, p}
     k = p+2
     t_next = t[k]
     for i ∈ eachindex(x)
@@ -274,32 +298,53 @@ function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}
             k += 1
             t_next += t.v
         end
-        fill!(d, zero(T))
-        ind = 2
-        for j ∈ 1:p
-            ind += p - 1
-            d[ind] = one(T)
-        end
-        denom = t.v * p
-        for r ∈ 1:p
-            α = (xᵢ - t[k-1]) / denom
-            omα = 1-α
-            for l ∈ 1+p-r:p
-                Φt[l+k-p-2,i] = α*Φt[l+k-p-2,i] + omα*d[l]
-            end
-            Φt[k-1,i] *= α
-
-            for j ∈ 2:1+p-r
-                α = (xᵢ - t[k-j]) / denom
-                omα = 1-α
-                for l ∈ p+2-j-r:p+2-j
-                    d[l,j-1] = α*d[l,j-1] + omα*d[l,j]
-                end
-            end
-            denom -= t.v
-        end
+        fillΦ_core!(Φt, d, x, t, i, k, xᵢ)
     end
 end
+
+
+function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::Knots{p}) where {T, p}
+    for i ∈ eachindex(x)
+        xᵢ = x[i]
+        k = find_k(t, xᵢ)
+        fillΦ_core!(Φt, d, x, t, i, k, xᵢ)
+    end
+end
+
+function fillΦ_core!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}, i::Int, k::Int, xᵢ::T) where {T, p}
+    denom = t.v * p
+    α = (xᵢ - t[k-1]) / denom
+    Φt[k-2,i] = 1-α
+    Φt[k-1,i] = α
+    for j ∈ 2:p
+        α = (xᵢ - t[k-j]) / denom
+        omα = 1-α
+        d[p+1-j,j-1] = omα
+        d[p+2-j,j-1] = α
+    end
+    denom -= t.v
+    for r ∈ 2:p
+        α = (xᵢ - t[k-1]) / denom
+        omα = 1-α
+        Φt[k-r-1,i] = omα*d[1+p-r]
+        for l ∈ 2+p-r:p
+            Φt[l+k-p-2,i] = α*Φt[l+k-p-2,i] + omα*d[l]
+        end
+        Φt[k-1,i] *= α
+
+        for j ∈ 2:1+p-r
+            α = (xᵢ - t[k-j]) / denom
+            omα = 1-α
+            d[p+2-j-r,j-1] = omα*d[p+2-j-r,j]
+            for l ∈ p+3-j-r:p+1-j
+                d[l,j-1] = α*d[l,j-1] + omα*d[l,j]
+            end
+            d[p+2-j,j-1] *= α
+        end
+        denom -= t.v
+    end
+end
+
 
 
 #Base.LinAlg.LAPACK.gels!('N', X, copy(y)) |> x -> x[2] #first K vals of Y

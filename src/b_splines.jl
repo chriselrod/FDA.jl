@@ -57,7 +57,7 @@ DiscreteKnots(v::StepRangeLen, ::Val{p}) where p = CardinalKnots{p,Float64}(v[1]
     impm1 = i - p - 1
     if impm1 <= 0
         return t.min
-    elseif impm1 >= knots.n - 1
+    elseif impm1 >= t.n - 1
         return t.max
     end
     t.min + impm1 * t.v
@@ -71,7 +71,7 @@ end
 struct BSpline{K, p, T}
   knots::K
   coefficients::Vector{Vector{T}}
-  ssr::T
+  ssr::Symmetric{T,Matrix{T}}
   buffer::Vector{T}
 end
 
@@ -79,8 +79,8 @@ end
 """
 k is the number of basis.
 """
-function BSpline(x::Vector, y::Vector, v::Vector, vp::Val{p} = Val{3}()) where p
-    knots = DiscreteKnots(v, vp)
+function BSpline(x::Vector, y::Vector, k::Vector, vp::Val{p} = Val{3}()) where p
+    knots = DiscreteKnots(k, vp)
     k = length(knots.v) - p - 1
     BSpline(x, y, k, knots)
 end
@@ -89,18 +89,27 @@ function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),5), ::Val{p} = 
     BSpline(x, y, k, CardinalKnots(x, k, Val{p}()))
 end
 
+@require NullableArrays BSpline(x::NullableArrays.NullableArray, y::NullableArrays.NullableArray, a...) = BSpline(convert(Vector{Float64}, x), convert(Vector{Float64}, y), a...)
+
+function solve(Xt, y, t = 'N')
+    XtXⁱ = Base.LinAlg.BLAS.syrk('U', t, 1.0, Xt)
+    Base.LinAlg.LAPACK.potrf!('U', XtXⁱ);
+    Base.LinAlg.LAPACK.potri!('U', XtXⁱ);
+    Base.LinAlg.BLAS.symv('U', XtXⁱ, Xt * y), Symmetric(XtXⁱ)
+end
+
 function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     n = length(x)
     Φt = zeros(promote_type(T, Float64), k, n)
     vector_buffer = Vector{T}(p+1)
     matrix_buffer = Matrix{T}(p,p)
     fillΦ!(Φt, matrix_buffer, x, knots)
-    Φt, y, knots, vector_buffer
+#    Φt, y, knots, vector_buffer
+    β, ΦᵗΦ⁻ = solve(Φt, y)
+    BSpline(knots, [β], ΦᵗΦ⁻, vector_buffer, Val{p}())
 end
-
-function tf(Φt, y, knots, vector_buffer)
-    f, b, ssr = Base.LinAlg.LAPACK.gels!('T', Φt, y)
-    BSpline(knots, [b], ssr, vector_buffer)
+function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, vb::Vector{T}, ::Val{p}) where {p, K <: Knots{p}, T}
+    BSpline{K, p, T}(knots, coef, S, vb)
 end
 
 
@@ -271,7 +280,7 @@ function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::DiscreteKnots{p}
         for r ∈ 2:p
             α = (xᵢ - t[k-1]) / (t[p+k-r] - t[k-1])
             omα = 1-α
-            Φt[k-r-1,i] = omα*d[l]
+            Φt[k-r-1,i] = omα*d[1+p-r]
             for l ∈ 2+p-r:p
                 Φt[l+k-p-2,i] = α*Φt[l+k-p-2,i] + omα*d[l]
             end
@@ -307,19 +316,25 @@ function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::Knots{p}) where 
     for i ∈ eachindex(x)
         xᵢ = x[i]
         k = find_k(t, xᵢ)
-        fillΦ_core!(Φt, d, x, t, i, k, xᵢ)
+        fillΦ_core!(Φt, d, t, i, k, xᵢ)
+    end
+end
+function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}) where {T, p}
+    for i ∈ eachindex(x)
+        xᵢ = x[i]
+        k = find_k(t, xᵢ)
+        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, k, xᵢ) : fillΦ_core!(Φt, d, t, i, k, xᵢ)
     end
 end
 
-function fillΦ_core!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}, i::Int, k::Int, xᵢ::T) where {T, p}
+function fillΦ_coreDEFUNCT!(Φt::Matrix{T}, d::Matrix{T}, t::CardinalKnots{p}, i::Int, k::Int, xᵢ::T) where {T, p}
     denom = t.v * p
     α = (xᵢ - t[k-1]) / denom
     Φt[k-2,i] = 1-α
     Φt[k-1,i] = α
     for j ∈ 2:p
         α = (xᵢ - t[k-j]) / denom
-        omα = 1-α
-        d[p+1-j,j-1] = omα
+        d[p+1-j,j-1] = 1-α
         d[p+2-j,j-1] = α
     end
     denom -= t.v
@@ -341,11 +356,73 @@ function fillΦ_core!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKno
             end
             d[p+2-j,j-1] *= α
         end
+        println(d)
         denom -= t.v
     end
 end
 
 
+function fillΦ_coreKGP!(out::Matrix{T}, d::Matrix{T}, t::CardinalKnots{p}, l::Int, k::Int, x::T) where {T, p}
+    @inbounds begin
+        denom = t.v * p
+        α = (x - t[k-1]) / denom
+        out[k-2,l] = 1-α
+        out[k-1,l] = α
+        for j ∈ 2:p
+            α = (x - t[k-j]) / denom
+            d[1+p-j,j-1] = (1-α)
+            d[p-j+2,j-1] = α
+        end
+        denom -= t.v
+        for r ∈ 2:p
+            α = (x - t[k-1]) / denom
+            out[k-r-1,l] = (1-α)*d[1+p-r]
+            for i ∈ 2+p-r:p
+                out[i+k-p-2,l] = (1-α)*d[i] + α*out[i+k-p-2,l]
+            end
+            out[k-1,l] *= α
+            for j ∈ 2:1+p-r
+                α = (x - t[k-j]) / denom
+                d[2+p-j-r,j-1] = (1-α)*d[2+p-j-r,j] #+ α*d[2+p-j-r,j]
+                for i ∈ 3+p-j-r:p-j+1
+                    d[i,j-1] = α*d[i,j-1] + (1-α)*d[i,j]
+                end
+                d[p+2-j,j-1] *= α
+            end
+            denom -= t.v
+        end
+    end
+end
+
+
+function fillΦ_core!(out::Matrix{T}, d::Matrix{T}, t::Knots{p}, l::Int, k::Int, x::T) where {T, p}
+   @inbounds begin
+       α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
+       out[k-2,l] = 1-α
+       out[k-1,l] = α
+       for j ∈ 2:p
+           α = (x - t[k-j]) / (t[p+k-j] - t[k-j])
+           d[1+p-j,j-1] = (1-α)
+           d[p-j+2,j-1] = α
+       end
+       for r ∈ 2:p
+           α = (x - t[k-1]) / (t[p+k-r] - t[k-1])
+           out[k-r-1,l] = (1-α)*d[1+p-r]
+           for i ∈ 2+p-r:p
+               out[i+k-p-2,l] = (1-α)*d[i] + α*out[i+k-p-2,l]
+           end
+           out[k-1,l] *= α
+           for j ∈ 2:1+p-r
+               α = (x - t[k-j]) / (t[1+p+k-r-j] - t[k-j])
+               d[2+p-j-r,j-1] = (1-α)*d[2+p-j-r,j] #+ α*d[2+p-j-r,j]
+               for i ∈ 3+p-j-r:p-j+1
+                   d[i,j-1] = α*d[i,j-1] + (1-α)*d[i,j]
+               end
+               d[p+2-j,j-1] *= α
+           end
+       end
+   end
+end
 
 #Base.LinAlg.LAPACK.gels!('N', X, copy(y)) |> x -> x[2] #first K vals of Y
 

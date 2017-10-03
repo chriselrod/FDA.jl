@@ -20,8 +20,7 @@ struct DiscreteKnots{p,T} <: Knots{p}
     n::Int
 end
 function CardinalKnots(x::Vector{T}, k::Int, ::Val{p}) where {p,T}
-    miv = minimum(x)
-    mav = maximum(x)
+    miv, mav = extrema(x)
     nm1 = k - p
     δ = (mav - miv)/ nm1
     δpoo5 = δ * 0.005
@@ -71,55 +70,150 @@ end
 struct BSpline{K, p, T}
   knots::K
   coefficients::Vector{Vector{T}}
-  ssr::Symmetric{T,Matrix{T}}
+  ΦᵗΦ⁻::Symmetric{T,Matrix{T}}
   buffer::Vector{T}
+  mat_buffer::Matrix{T}
+  Φᵗ::Matrix{T}
+  y::Vector{T}
 end
 
 
 """
 k is the number of basis.
 """
-function BSpline(x::Vector, y::Vector, k::Vector, vp::Val{p} = Val{3}()) where p
-    knots = DiscreteKnots(k, vp)
+function BSpline(x::AbstractVector{T}, y, k::Int, extra_knots::Vector, vp::Val{p} = Val{3}()) where {T, p}
+    issorted(extra_knots) || sort!(extra_knots)
+    uek = unique(extra_knots)
+    ekn = length(extra_knots)
+    l = k - p + 1 - ekn
+
+    per = l / (length(uek) + 1)
+
+    println(per)
+    min_, max_ = extrema(x)
+    knot_vector = Vector{T}(k + p + 1)
+    knot_vector[1:p] .= min_
+    ind = p
+
+    for j ∈ linspace(min_, uek[1], round(Int, per)+1)
+        ind += 1
+        knot_vector[ind] = j
+    end
+    for i ∈ 1:length(uek)-1
+        for j ∈ 2:sum(extra_knots .== uek[i])
+            ind += 1
+            knot_vector[ind] = uek[i]
+        end
+
+        for j ∈ linspace(uek[i], uek[i+1], 1 + round(Int, (i+1)* per) - round(Int, (i)* per))
+            ind += 1
+            knot_vector[ind] = j
+        end
+    end
+    i = length(uek)
+    for j ∈ 2:sum(extra_knots .== uek[i])
+        ind += 1
+        knot_vector[ind] = uek[i]
+    end
+    for j ∈ linspace(uek[i], max_, 1 + round(Int, (i+1)* per) - round(Int, (i)* per))
+        ind += 1
+        knot_vector[ind] = j
+    end
+
+    knot_vector[end-p-1:end] .= max_
+    println(knot_vector)
+
+    BSpline(x, y, k, DiscreteKnots(vp, knot_vector))
+#    return DiscreteKnots(vp, knot_vector)
+end
+
+function BSpline(x::Vector, y::Vector, knotv::Vector, vp::Val{p} = Val{3}()) where p
+    knots = DiscreteKnots(knotv, vp)
     k = length(knots.v) - p - 1
     BSpline(x, y, k, knots)
 end
 
-function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),5), ::Val{p} = Val{3}()) where {T, p}
+function BSpline(x::Vector{T}, y::Vector, ::Val{p}, k::Int = div(length(x),5)) where {T, p}
     BSpline(x, y, k, CardinalKnots(x, k, Val{p}()))
 end
 
 @require NullableArrays BSpline(x::NullableArrays.NullableArray, y::NullableArrays.NullableArray, a...) = BSpline(convert(Vector{Float64}, x), convert(Vector{Float64}, y), a...)
 
-function solve(Xt, y, t = 'N')
-    XtXⁱ = Base.LinAlg.BLAS.syrk('U', t, 1.0, Xt)
-    Base.LinAlg.LAPACK.potrf!('U', XtXⁱ);
-    Base.LinAlg.LAPACK.potri!('U', XtXⁱ);
-    Base.LinAlg.BLAS.symv('U', XtXⁱ, Xt * y), Symmetric(XtXⁱ)
-end
-
 function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     n = length(x)
-    Φt = zeros(promote_type(T, Float64), k, n)
+    Φᵗ = zeros(promote_type(T, Float64), k, n)
     vector_buffer = Vector{T}(p+1)
     matrix_buffer = Matrix{T}(p,p)
-    fillΦ!(Φt, matrix_buffer, x, knots)
+    fillΦ!(Φᵗ, matrix_buffer, x, knots)
 #    Φt, y, knots, vector_buffer
-    β, ΦᵗΦ⁻ = solve(Φt, y)
-    BSpline(knots, [β], ΦᵗΦ⁻, vector_buffer, Val{p}())
+#    println("P: $p, size of Φ: $(size(Φᵗ)), y: $(size(y))")
+    β, ΦᵗΦ⁻ = solve(Φᵗ, y)
+    BSpline(knots, [β], ΦᵗΦ⁻, vector_buffer, matrix_buffer, Φᵗ, y, Val{p}())
 end
-function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, vb::Vector{T}, ::Val{p}) where {p, K <: Knots{p}, T}
-    BSpline{K, p, T}(knots, coef, S, vb)
+function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, vb::Vector{T}, mb::Matrix{T}, Φᵗ, y, ::Val{p}) where {p, K <: Knots{p}, T}
+    BSpline{K, p, T}(knots, coef, S, vb, mb, Φᵗ, y)
 end
 
-
-function eval_spline(s::BSpline{K, p}, x::Vector) where {K, p}
-    add_derivative_coefs!(s, vd)
-    sorteddeBoor!(s.buffer, x, s.knots, s.coefficients[1], Val{p}())
+function ssr!(s::BSpline)
+    sum(abs2, Base.LinAlg.BLAS.gemm!('T', 'N', 1.0, s.Φᵗ, s.coefficients[1], -1.0, s.y))
 end
-function eval_spline(s::BSpline{K, p}, x::Vector, ::Val{d}) where {K, p, d}
+function ssr(s::BSpline{K, p, T}) where {K, p, T}
+    out = zero(T)
+    for i ∈ eachindex(s.y)
+        δ = s.y[i]
+        for j ∈ eachindex(s.coefficients[1])
+            δ -= s.coefficients[1][j] * s.Φᵗ[j,i]
+        end
+        out += abs2(δ)
+    end
+    out
+end
+function confidence_width(s::BSpline{K, p, T}, x) where {K, p, T}
+    k = find_k(s.knots, x)
+    fillΦ3!(s.buffer, s.mat_buffer, x, s.knots, p, k)
+    out = zero(T)
+    for i ∈ 1:p+1
+        out += s.ΦᵗΦ⁻.data[i, i] * s.buffer[i]^2
+        for j ∈ 1:i-1
+            out += 2s.ΦᵗΦ⁻.data[j+p+1, i+p+1] * s.buffer[i] * s.buffer[j]
+        end
+    end
+    out
+end
+
+function scaleVar!(s::BSpline{K, p}) where {K, p}
+    σ = ssr(s) / (length(s.y) - s.knots.n - p + 1)
+    s.ΦᵗΦ⁻ ./= σ
+end
+
+function gcv(s::BSpline{K, p}) where {K, p}
+    ssr(s) * length(s.y) / (length(s.y) - s.knots.n - p + 1)^2
+end
+function gcv!(s::BSpline{K, p}) where {K, p}
+    nmdf = length(s.y) - s.knots.n - p + 1
+    σ = ssr(s) / nmdf
+    s.ΦᵗΦ⁻.data ./= σ
+    σ * length(s.y) / (length(s.y) - s.knots.n - p + 1)
+end
+
+@inline evaluate(s::BSpline, x::AbstractArray, args...) = evaluate!(similar(x), s, x, args...)
+function evaluate!(out, s::BSpline{K, p}, x::AbstractArray) where {K, p}
+    deBoor!(out, s.buffer, x, s.knots, s.coefficients[1], Val{p}())
+end
+
+###First 5 derivates may be wrong?!?!?
+#julia> d1_fd = ForwardDiff.derivative.(x -> deBoor(x, bs.knots, bs.coefficients[1], Val{3}(), find_k(bs.knots, ForwardDiff.value(x))), tt);
+
+#julia> d2_fd = ForwardDiff.derivative.(y -> ForwardDiff.derivative(x -> deBoor(x, bs.knots, bs.coefficients[1], Val{3}(), find_k(bs.knots, ForwardDiff.value(ForwardDiff.value(x)))), y), tt);
+
+
+###d1 = evaluate(bs, tt, Val{1}())
+function evaluate!(out, s::BSpline{K, p}, x::AbstractArray, vd::Val{d}) where {K, p, d}
     add_derivative_coefs!(s, vd)
-    sorteddeBoor!(s.buffer, x, s.knots, s.coefficients[d+1], value_deriv(Val{p}(), Val{d}()))
+    deBoor!(out, s.buffer, x, s.knots, s.coefficients[d+1], value_deriv(Val{p}(), Val{d}()))
+end
+function evaluate(s::BSpline{K, p}, x::T, args...) where {T <: Real, K, p}
+    deBoor!(s.buffer, x, s.knots, s.coefficients[1], Val{p}(), find_k(s.knots, x))
 end
 
 function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: DiscreteKnots, p, d}
@@ -139,33 +233,7 @@ function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: Cardina
     end
 end
 
-"""
-p is the penalty degree, and k the number of coefficients in your model.
-"""
-function penalty_matrix!(out::Matrix{T}, buffer::Vector{T}, k::Int, p::Int) where T
-    fill!(out, zero(T))
-    buffer[1] = 1
-    next = last =  one(T)
-    for i ∈ 1:p
-        for j ∈ 1:i-1
-            last, next = next, buffer[j+1]
-            buffer[j+1] -= last
-        end
-        last, next = next, one(T)
-        buffer[i+1] -= last
-    end
-    dk2 = div(k,2)
-    for i ∈ 1:dk2, j ∈ max(1,i-p):i, l ∈ 1:min(j,p+1+j-i)
-        out[j,i] += buffer[l]*buffer[l+i-j]
-    end
-    for i ∈ dk2+1:k, j ∈ max(1,i-p):i
-        out[j,i] = out[k+1-i,k+1-j]
-    end
-    out
-end
-penalty_matrix(k, p) = penalty_matrix!(Matrix{Float64}(k, k), zeros(p+1), k, p)
-
-@inline find_k(t::DiscreteKnots, x) = searchsortedfirst(t.v, x)
+find_k(t::DiscreteKnots, x) = searchsortedfirst(t.v, x, lt = <=)
 @inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
 
 
@@ -201,6 +269,18 @@ function deBoorCore!(d::Vector, x, t::CardinalKnots, c, ::Val{p}, k = find_k(t, 
 end
 
 
+function deBoor!(out::Vector, d::Vector, x::Vector, t::Knots{q}, c, Vp::Val{p}) where {q, p}
+    for i ∈ eachindex(x)
+        xᵢ = x[i]
+        k = find_k(t, xᵢ)
+        for j ∈ 1:p+1
+            d[p+2-j] = c[j+k-q-2]
+        end
+        deBoorCore!(d, xᵢ, t, c, Vp, k)
+        out[i] = d[1]
+    end
+    out
+end
 function sorteddeBoor!(out::Vector, d::Vector, x::Vector, t::Knots{q}, c, Vp::Val{p}) where {q, p}
     k = q+2
     t_next = t[k]
@@ -233,6 +313,9 @@ function fillΦ2!(d, x, t, p, k = find_k(t, x))
 end
 @inline fillΦ(x, t, p, k = find_k(t, x)) = fillΦ2!(eye(p+1), x, t, p, k)
 
+
+
+
 ###Faster version? May as well set d...
 function fillΦ!(d, x, t, p, k = find_k(t, x))
   fill!(d, 0.0)
@@ -247,55 +330,10 @@ function fillΦ!(d, x, t, p, k = find_k(t, x))
       end
     end
   end
-  d[:,p+1]
+  view(d, :,p+1)
 end
 
 #d is a p x p buffer; last column truncated to write directly into Φt
-function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::DiscreteKnots{p}) where {T, p}
-    k = p+2
-    t_next = t[k]
-    for i ∈ eachindex(x)
-        xᵢ = x[i]
-        while xᵢ > t_next
-            k += 1
-            t_next = t[k]
-        end
-        fill!(d, zero(T))
-        ind = 1
-        for j ∈ 1:p
-            ind += p - 1
-            d[ind] = one(T)
-        end
-        α = (xᵢ - t[k-1]) / (t[p+k-1] - t[k-1])
-        Φt[k-2,i] = 1-α
-        Φt[k-1,i] = α
-
-        for j ∈ 2:p
-            α = (xᵢ - t[k-j]) / (t[p+k-j] - t[k-j])
-            omα = 1-α
-            for l ∈ p+1-j:p+2-j
-                d[l,j-1] = α*d[l,j-1] + omα*d[l,j]
-            end
-        end
-        for r ∈ 2:p
-            α = (xᵢ - t[k-1]) / (t[p+k-r] - t[k-1])
-            omα = 1-α
-            Φt[k-r-1,i] = omα*d[1+p-r]
-            for l ∈ 2+p-r:p
-                Φt[l+k-p-2,i] = α*Φt[l+k-p-2,i] + omα*d[l]
-            end
-            Φt[k-1,i] *= α
-
-            for j ∈ 2:1+p-r
-                α = (xᵢ - t[k-j]) / (t[p+1+k-r-j] - t[k-j])
-                omα = 1-α
-                for l ∈ p+2-j-r:p+2-j
-                    d[l,j-1] = α*d[l,j-1] + omα*d[l,j]
-                end
-            end
-        end
-    end
-end
 
 
 function sorted_fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{p}) where {T, p}
@@ -422,6 +460,34 @@ function fillΦ_core!(out::Matrix{T}, d::Matrix{T}, t::Knots{p}, l::Int, k::Int,
            end
        end
    end
+end
+
+function fillΦ3!(out, d, x, t, p, k = find_k(t, x))
+    α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
+    out[p] = (1-α)
+    out[p+1] = α
+    for j ∈ 2:p
+        α = (x - t[k-j]) / (t[p+k-j] - t[k-j])
+        d[1+p-j,j-1] = (1-α)
+        d[p-j+2,j-1] = α
+    end
+    for r ∈ 2:p
+        α = (x - t[k-1]) / (t[p+k-r] - t[k-1])
+        out[1+p-r] = (1-α)*d[1+p-r,1]
+        for i ∈ 2+p-r:p
+            out[i] = (1-α)*d[i,1] + α*out[i]
+        end
+        out[p+1] *= α
+        for j ∈ 2:1+p-r
+            α = (x - t[k-j]) / (t[1+p+k-r-j] - t[k-j])
+            d[2+p-j-r,j-1] = (1-α)*d[2+p-j-r,j] #+ α*d[2+p-j-r,j]
+            for i ∈ 3+p-j-r:p-j+1
+                d[i,j-1] = α*d[i,j-1] + (1-α)*d[i,j]
+            end
+            d[p+2-j,j-1] *= α
+        end
+    end
+    out
 end
 
 #Base.LinAlg.LAPACK.gels!('N', X, copy(y)) |> x -> x[2] #first K vals of Y

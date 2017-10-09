@@ -83,6 +83,9 @@ Base.size(x::intervals) = (x.knots.n - 1, )
 Base.length(x::intervals) = x.knots.n - 1
 Base.eltype(::intervals{K}) where {p, T, K <: Knots{p, T}} = T
 
+Base.range(t::DiscreteKnots, max::Int, min::Int) = t.v[max] - t.v[min]
+Base.range(t::CardinalKnots, max::Int, min::Int) = t.v * (max - min)
+
 @generated Base.start(::intervals{K}) where {p, K <: DiscreteKnots{p}} = p + 1
 function Base.next(x::intervals{DiscreteKnots{p,T}}, state) where {p, T}
     next = state + 1

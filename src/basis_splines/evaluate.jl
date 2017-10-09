@@ -29,7 +29,7 @@ function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: Discret
     end
 end
 function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: CardinalKnots, p, d}
-    for i ∈ length(s.coefficients):d #i is derivative being added
+    for i ∈ length(s.coefficients):d #i is derivative being added; final length of coefs is d+1
         coef = diff(s.coefficients[i]) ./ s.knots.v
         push!(s.coefficients, coef)
     end

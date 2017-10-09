@@ -13,19 +13,55 @@ function BSplinePenalty(s::BSpline{K, p, T} where K <: DiscreteKnots, d::Int) wh
       ub = s.knots[i]
       isa(s.knots, DiscreteKnots) && lb == ub && continue
       Δ = (ub - lb) / (∂+1)
-      xv[i*∂+1:(i+1)*∂] .= lb:Δ:ub-Δ
+      for j ∈ 0:∂-1
+          xv[i*∂+j+1] = lb + Δ * j
+      end
+#      [i*∂+1:(i+1)*∂] .= lb:Δ:ub-Δ
       lb = ub
     end
     fillΦ!(∂Φ, s.buffer, xv, s.knots, ∂)
-    expandΦ!(∂Φ)
-
+    expandΦ!(∂Φ, s.knots, d) ###Produces G. Gβ == fillΦ! * s.coefs[d+1]
 end
 
-function expandΦ!(Φ)
+function expandΦ!(Φ, t::Knots{p}, d::Int) where p
+    Threads.@threads for i ∈ 1:size(Φ,2)
+        for j ∈ 1:d
+            pjmd = p + j - d
+            oldscaled = Φ[1,i] * pjmd / range(t, 2+p, 2+d-j)
+            Φ[1,i] = - oldscaled
+            for k ∈ 2:size(Φ,1) - d + j - 1
+                newscaled = Φ[k,i] * pjmd / range(t, 1+k+p, 1+k+d-j)
+                Φ[k,i] = oldscaled - newscaled
+                oldscaled = newscaled
+            end
+            Φ[end+d-j,i] = oldscaled
+        end
+
+    end
 
 end
+function ginv!(X)
+    X, piv, inf = Base.LinAlg.LAPACK.getrf!(X)
+    Base.LinAlg.LAPACK.getri!(X, piv)
+end
+function gen_Lw(∂)
+    H = Matrix{Float64}(∂+1,∂+1)
+#    H = similar(P)
+    for i ∈ 1:∂+1, j ∈ 1:∂+1
+        P[j,i] = (-1  + 2(i-1)/∂ )^j
+    end
+    P = inv(H)
+    for i ∈ 1:∂+1
+        H[i,i] = ( 1 + (-1)^(2i-2) ) / (2i-1)
+        for j ∈ i+1:∂+1
+            H[j,i] = ( 1 + (-1)^(i+j-2) ) / (i+j-1)
+        end
+    end
+    Base.LinAlg.LAPACK.potrf!('U', H)
+    Base.LinAlg.BLAS.trmm!('L', 'U', 'N', 'N', 1.0, H, P) #Updates P
+    Base.LinAlg.BLAS.syrk!('U', 'T', 1.0, P, 0.0, H)
 
-function gen_w()
+    W = Base.LinAlg.BLAS.symm('L', 'U')
 
 end
 

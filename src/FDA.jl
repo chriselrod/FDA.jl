@@ -1,6 +1,6 @@
 module FDA
 
-using Requires
+using Requires, BandedMatrices
 
 export  BSpline,
         FourierBasis,

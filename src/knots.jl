@@ -6,12 +6,15 @@ struct CardinalKnots{p,T} <: Knots{p,T}
     v::T
     n::Int
     done::T
+    minind::Int
+    maxind::Int
 end
 struct DiscreteKnots{p,T} <: Knots{p,T}
     min::T
     max::T
     v::Vector{T}
     n::Int
+    unique::Int
 end
 struct intervals{K,T}
     knots::K
@@ -25,20 +28,20 @@ function CardinalKnots(x::Vector{T}, k::Int, ::Val{p}) where {p,T}
     nm1 = k - p
     δ = (mav - miv)/ nm1
     δpoo5 = δ * 0.005
-    CardinalKnots{p,T}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, nm1+1, mav + 2δpoo5)
+    CardinalKnots{p,T}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, nm1+1, mav + 2δpoo5, p+1, p+1+l)
 end
 function CardinalKnots(minval::T, maxval::T, n::Int, ::Val{p}) where {p,T}
     S = promote_type(T, Float64)
     v = convert(S, (maxval-minval)/(n-1))
-    CardinalKnots{p,S}(convert(S, minval), convert(S, maxval), v, n, 0.5v + maxval)
+    CardinalKnots{p,S}(convert(S, minval), convert(S, maxval), v, n, 0.5v + maxval, p+1, p+n)
 end
-function DiscreteKnots(::Val{p}, v::Vector{T}) where {p,T}
-    n = length(v)
-    DiscreteKnots{p,T}(v[1], v[n], v, n)
+function DiscreteKnots(::Val{p}, v::Vector{T}, n::Int = length(v), unique::Int = count_unique_sorted(n)) where {p,T}
+    DiscreteKnots{p,T}(v[1], v[n], v, n, unique)
 end
 function DiscreteKnots(v::Vector{T}, ::Val{p}) where {p,T}
     issorted(v) || sort!(v)
     n = length(v)
+    unique = count_unique_sorted(n)
     minval = v[1]
     maxval = v[n]
     n = length(v)
@@ -49,10 +52,22 @@ function DiscreteKnots(v::Vector{T}, ::Val{p}) where {p,T}
             push!(v, maxval)
         end
     end
-    DiscreteKnots{p,T}(minval, maxval, v, n)
+    DiscreteKnots{p,T}(minval, maxval, v, n, unique)
 end
 DiscreteKnots(v::StepRangeLen, ::Val{p}) where p = CardinalKnots{p,Float64}(v[1], v[end], convert(Float64, v.step), length(v))
 
+function count_unique_sorted(v)
+    unique = 0
+    last = v[1]
+    for i ∈ 2:length(v)
+        next = v[i]
+        if !(last ≈ next)
+            unique += 1
+        end
+        last = next
+    end
+    unique
+end
 
 @inline function Base.getindex(t::CardinalKnots{p,T}, i)::T where {p,T}
     impm1 = i - p - 1
@@ -65,8 +80,11 @@ DiscreteKnots(v::StepRangeLen, ::Val{p}) where p = CardinalKnots{p,Float64}(v[1]
 end
 @inline Base.getindex(t::DiscreteKnots, i) = t.v[i]
 
-find_k(t::DiscreteKnots, x) = searchsortedfirst(t.v, x, lt = <=)
+@inline find_k(t::DiscreteKnots, x) = searchsortedfirst(t.v, x, lt = <=)
 @inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
+
+unique(t::CardinalKnots) = t.n
+unique(t::DiscreteKnots) = t.unique
 
 Base.size(x::Knots) = (x.n, )
 Base.length(x::Knots) = x.n
@@ -84,7 +102,7 @@ Base.length(x::intervals) = x.knots.n - 1
 Base.eltype(::intervals{K}) where {p, T, K <: Knots{p, T}} = T
 
 Base.range(t::DiscreteKnots, max::Int, min::Int) = t.v[max] - t.v[min]
-Base.range(t::CardinalKnots, max::Int, min::Int) = t.v * (max - min)
+Base.range(t::CardinalKnots, max_::Int, min_::Int) = t.v * (min(max_,t.maxind) - max(min_,t.minind))
 
 @generated Base.start(::intervals{K}) where {p, K <: DiscreteKnots{p}} = p + 1
 function Base.next(x::intervals{DiscreteKnots{p,T}}, state) where {p, T}

@@ -4,8 +4,8 @@
 ### J = β'Sβ, S = G'WG, therefore J = (Gβ)'WGβ. You have already implemented the method for calculating Gβ!!! Alternatively, should be straightforward to do with fillΦ! as well.
 ### Question is -- what is easiest? Actual calculation of Gβ would aid solving via linear algebra.
 ###Fix later for cardinal knots. Basically, replace first for loop.
-function BSplinePenalty(s::BSpline{K, p, T} where K <: DiscreteKnots, d::Int) where {p, T, d}
-    xv = Vector{T}((unique(s)-1)*p+1)
+function BSplinePenalty(s::BSpline{K, p, T} where K <: DiscreteKnots, d::Int) where {p, T}
+    xv = Vector{T}((unique(s.knots)-1)*p+1)
     ∂Φ = zeros(s.k, length(xv))
     lb = s.knots[1]
     ∂ = p - d
@@ -44,24 +44,62 @@ function ginv!(X)
     X, piv, inf = Base.LinAlg.LAPACK.getrf!(X)
     Base.LinAlg.LAPACK.getri!(X, piv)
 end
-function gen_Lw(∂)
-    H = Matrix{Float64}(∂+1,∂+1)
+
+@inline function Base.setindex!(w::BandedMatrices.SymBandedMatrix, v, i, j)
+    BandedMatrices.symbanded_setindex!(w.data,w.k, v, i, j)
+end
+# When you want to turn off bounds checking:
+# syminbands_setindex!
+
+function gen_Uw(∂::Int, q::Int, ∂p1::Int = ∂+1) #q = l - 1
+    H = Matrix{Float64}(∂p1,∂p1)
 #    H = similar(P)
-    for i ∈ 1:∂+1, j ∈ 1:∂+1
+    for i ∈ 1:∂p1, j ∈ 1:∂p1
         P[j,i] = (-1  + 2(i-1)/∂ )^j
     end
     P = inv(H)
-    for i ∈ 1:∂+1
-        H[i,i] = ( 1 + (-1)^(2i-2) ) / (2i-1)
-        for j ∈ i+1:∂+1
+    for i ∈ 1:∂p1
+        for j ∈ 1:i
             H[j,i] = ( 1 + (-1)^(i+j-2) ) / (i+j-1)
         end
     end
     Base.LinAlg.LAPACK.potrf!('U', H)
     Base.LinAlg.BLAS.trmm!('L', 'U', 'N', 'N', 1.0, H, P) #Updates P
-    Base.LinAlg.BLAS.syrk!('U', 'T', 1.0, P, 0.0, H)
+    Base.LinAlg.BLAS.syrk!('U', 'T', 1.0, P, 0.0, H) #Updates H
 
-    W = Base.LinAlg.BLAS.symm('L', 'U')
+    for i ∈ 2:∂p1, j ∈ 1:i-1 #Should pay off in terms of fast indexing.
+        H[i,j] = H[j,i]
+    end
+
+
+    n = 1+q*∂
+    #Wants upper triangular index pattern, of decreasing abs(i - j) on each step
+    W = SymBandedMatrix(Float64, n, ∂)
+
+
+    for i ∈ 1:∂, j ∈ 1:i
+        W[j, i] = H[j,i]
+    end
+    for qᵢ ∈ 1:q-1 #do it for q = 0 above this.
+        indⱼ = 1+qᵢ*∂
+        W[indⱼ, indⱼ] = H[1,1] + H[∂p1, ∂p1]
+        for j ∈ 2:∂+1
+            W[j+qᵢ*∂, indⱼ] = H[j,1] + H[j, ∂p1]
+        end
+        for i ∈ 2:∂
+            indᵢ = i+qᵢ*∂
+#            W[indᵢ, indⱼ] = H[i,1] + H[i,∂p1]
+            for j ∈ 2:i
+                W[j+qᵢ*∂, indᵢ] = H[j,i]
+            end
+        end
+    end
+    for j ∈ 1:∂+1
+        W[j+(q-1)*∂, n] = H[j,∂p1]
+    end
+    W
+
+#    W = Base.LinAlg.BLAS.symm('L', 'U')
 
 end
 

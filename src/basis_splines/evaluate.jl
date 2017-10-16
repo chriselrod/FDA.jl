@@ -1,4 +1,9 @@
 
+
+macro threaded(expr)
+   Threads.nthreads() == 1 ? expr : :(Threads.@threads($expr))
+end
+
 @inline evaluate(s::BSpline, x::AbstractArray, args...) = evaluate!(similar(x), s, x, args...)
 function evaluate!(out, s::BSpline{K, p}, x::AbstractArray) where {K, p}
     deBoor!(out, s.buffer, x, s.knots, s.coefficients[1], Val{p}())
@@ -108,27 +113,16 @@ function fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots, Vp::Val)
         fillΦ_core!(Φt, d, t, i, k, xᵢ, Vp)
     end
 end
-function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots{d}, p) where {T, d}
-  if Threads.nthreads() == 1
-    for i ∈ eachindex(x)
+function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots, Vp) where {T}
+    @threaded for i ∈ eachindex(x)
         xᵢ = x[i]
         k = find_k(t, xᵢ)
         k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, k, xᵢ, Vp) : fillΦ_core!(Φt, d, t, i, k, xᵢ, Vp)
     end
-  else
-    Threads.@threads for i ∈ eachindex(x)
-        xᵢ = x[i]
-        k = find_k(t, xᵢ)
-        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, k, xᵢ, Vp) : fillΦ_core!(Φt, d, t, i, k, xᵢ, Vp)
-    end
-  end
 end
 
-macro threaded(expr) = Threads.nthreads() == 1 ? expr : Threads.threads(expr)
-
-
 ###Need to make decision about whether to deparametrize, or unroll the loops.
-function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots{d}, l::Int, k::Int, x::T, p) where {T, d}
+function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots, l::Int, k::Int, x::T, p) where T
     begin
         denom = t.v * p
         α = (x - t[k-1]) / denom
@@ -161,7 +155,7 @@ function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots{d
 end
 
 """d is a buffer. It must be linearly indexable, muttable, and of length at least p^2. Eg, a simple Vector{Float64}(p^2) or Matrix{Float64}(p,p). It was initially required to be the latter, but all indices were made linear to accomodate more flexible choices in buffer, and making it easier to reuse the same chunks of memory."""
-function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots{d}, l::Int, k::Int, x::T, p::Int) where {T, d}
+function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots, l::Int, k::Int, x::T, p::Int) where T
    @inbounds begin
        α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
        out[k-2,l] = 1-α

@@ -21,14 +21,14 @@ struct intervals{K,T}
     done::T
 end
 intervals(knots::CardinalKnots) = intervals(knots, knots.done - knots.v)
-intervals(knots::DiscreteKnots{p}) where p = intervals(knots, x.n + p - 1)
+intervals(knots::DiscreteKnots{p}) where p = intervals(knots, knots.n + p - 1)
 
 function CardinalKnots(x::Vector{T}, k::Int, ::Val{p}) where {p,T}
     miv, mav = extrema(x)
     nm1 = k - p
     δ = (mav - miv)/ nm1
     δpoo5 = δ * 0.005
-    CardinalKnots{p,T}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, nm1+1, mav + 2δpoo5, p+1, p+1+l)
+    CardinalKnots{p,T}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, nm1+1, mav + 2δpoo5, p+1, p+nm1+1)
 end
 function CardinalKnots(minval::T, maxval::T, n::Int, ::Val{p}) where {p,T}
     S = promote_type(T, Float64)
@@ -44,13 +44,15 @@ function DiscreteKnots(v::Vector{T}, ::Val{p}) where {p,T}
     unique = count_unique_sorted(n)
     minval = v[1]
     maxval = v[n]
-    n = length(v)
     if v[2] != minval
+        n = length(v)
         sizehint!(v, n + 2p)
         for i ∈ 1:p
             unshift!(v, minval)
             push!(v, maxval)
         end
+    else
+        n = length(v) - 2p
     end
     DiscreteKnots{p,T}(minval, maxval, v, n, unique)
 end
@@ -80,7 +82,7 @@ end
 end
 @inline Base.getindex(t::DiscreteKnots, i) = t.v[i]
 
-@inline find_k(t::DiscreteKnots, x) = searchsortedfirst(t.v, x, lt = <=)
+@inline find_k(t::DiscreteKnots{p}, x) where p = x >= t.max ? t.n + p : searchsortedfirst(t.v, x, lt = <=)
 @inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
 
 unique(t::CardinalKnots) = t.n

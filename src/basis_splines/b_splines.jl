@@ -7,13 +7,11 @@ struct BSpline{K, p, T}
   knots::K
   coefficients::Vector{Vector{T}}
   ΦᵗΦ⁻::Symmetric{T,Matrix{T}}
-  buffer::Vector{T}
-  mat_buffer::Matrix{T}
+  buffer::Matrix{T}
   Φᵗ::Matrix{T}
   y::Vector{T}
   k::Int
 end
-
 
 """
 k is the number of basis.
@@ -79,16 +77,13 @@ end
 function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     n = length(x)
     Φᵗ = zeros(promote_type(T, Float64), k, n)
-    vector_buffer = Vector{T}(p+1)
-    matrix_buffer = Matrix{T}(p,p)
-    fillΦ!(Φᵗ, matrix_buffer, x, knots)
-#    Φt, y, knots, vector_buffer
-#    println("P: $p, size of Φ: $(size(Φᵗ)), y: $(size(y))")
+    buffer = Matrix{T}(p+1,p+1)
+    fillΦ!(Φᵗ, buffer, x, knots)
     β, ΦᵗΦ⁻ = solve(Φᵗ, y)
-    BSpline(knots, [β], ΦᵗΦ⁻, vector_buffer,                    matrix_buffer, Φᵗ, y, Val{p}(), k)
+    BSpline(knots, [β], ΦᵗΦ⁻, buffer, Φᵗ, y, Val{p}(), k)
 end
-function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, vb::Vector{T}, mb::Matrix{T}, Φᵗ, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
-    BSpline{K, p, T}(knots, coef, S, vb, mb, Φᵗ, y, k)
+function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Matrix{T}, Φᵗ, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
+    BSpline{K, p, T}(knots, coef, S, b, Φᵗ, y, k)
 end
 
 

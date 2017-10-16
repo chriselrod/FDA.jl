@@ -1,7 +1,7 @@
 
 
 macro threaded(expr)
-   Threads.nthreads() == 1 ? expr : :(Threads.@threads($expr))
+   Threads.nthreads() == 1 ? expr : :(Threads.@threads($:(expr)))
 end
 
 @inline evaluate(s::BSpline, x::AbstractArray, args...) = evaluate!(similar(x), s, x, args...)
@@ -105,21 +105,36 @@ end
 
 
 
-@inline fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots{p}) where p = fillΦ!(Φt, d, x, t, Val{p}())
-function fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots, Vp::Val)
+@inline fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots{p}) where p = fillΦ!(Φt, d, x, t, p)
+function fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots, p::Int)
     for i ∈ eachindex(x)
         xᵢ = x[i]
         k = find_k(t, xᵢ)
-        fillΦ_core!(Φt, d, t, i, k, xᵢ, Vp)
+        fillΦ_core!(Φt, d, t, i, k, xᵢ, p)
     end
 end
-function fillΦ!(Φt::Matrix{T}, d::Matrix{T}, x::Vector{T}, t::CardinalKnots, Vp) where {T}
-    @threaded for i ∈ eachindex(x)
+fillΦ!(args...) = Threads.nthreads() == 1 ? fillΦ_unthreaded!(args...) : fillΦ_unthreaded!(args...)
+
+function fillΦ_unthreaded!(Φt::Matrix, d::Matrix, x::Vector, t::CardinalKnots, p::Int)
+    for i ∈ eachindex(x)
         xᵢ = x[i]
         k = find_k(t, xᵢ)
-        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, k, xᵢ, Vp) : fillΦ_core!(Φt, d, t, i, k, xᵢ, Vp)
+        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, k, xᵢ, p) : fillΦ_core!(Φt, d, t, i, k, xᵢ, p)
     end
 end
+function fillΦ_threaded!(Φt::Matrix, d::Matrix, x::Vector, t::CardinalKnots, p::Int)
+    buffers = [d]
+    for i ∈ 2:Threads.nthreads()
+        push!(buffers, similar(d))
+    end
+    Threads.@threads for i ∈ eachindex(x)
+        xᵢ = x[i]
+        k = find_k(t, xᵢ)
+        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, buffers[Threads.threadid()], t, i, k, xᵢ, p) : fillΦ_core!(Φt, buffers[Threads.threadid()], t, i, k, xᵢ, p)
+    end
+
+end
+
 
 ###Need to make decision about whether to deparametrize, or unroll the loops.
 function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots, l::Int, k::Int, x::T, p) where T
@@ -143,7 +158,7 @@ function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots, 
             out[k-1,l] *= α
             for j ∈ 2:1+p-r
                 α = (x - t[k-j]) / denom
-                d[(p-1)*(j-1)+1-r] = (1-α)*d[(j-1)p+1-r] #+ α*d[2+p-j-r,j]
+                d[(p-1)*(j-1)+1-r] = (1-α)*d[(p-1)j+1-r] #+ α*d[2+p-j-r,j]
                 for i ∈ 3+p-j-r:p-j+1
                     d[i+(j-2)p] = α*d[i+(j-2)p] + (1-α)*d[i+(j-1)p]
                 end
@@ -156,7 +171,7 @@ end
 
 """d is a buffer. It must be linearly indexable, muttable, and of length at least p^2. Eg, a simple Vector{Float64}(p^2) or Matrix{Float64}(p,p). It was initially required to be the latter, but all indices were made linear to accomodate more flexible choices in buffer, and making it easier to reuse the same chunks of memory."""
 function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots, l::Int, k::Int, x::T, p::Int) where T
-   @inbounds begin
+   begin
        α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
        out[k-2,l] = 1-α
        out[k-1,l] = α
@@ -174,7 +189,7 @@ function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots, l::Int, k::
            out[k-1,l] *= α
            for j ∈ 2:1+p-r
                α = (x - t[k-j]) / (t[1+p+k-r-j] - t[k-j])
-               d[(p-1)*(j-1)+1-r] = (1-α)*d[(j-1)p+1-r] #+ α*d[2+p-j-r,j]
+               d[(p-1)*(j-1)+1-r] = (1-α)*d[(p-1)j+1-r] #+ α*d[2+p-j-r,j]
                for i ∈ 3+p-j-r:p-j+1
                    d[i+(j-2)p] = α*d[i+(j-2)p] + (1-α)*d[i+(j-1)p]
                end

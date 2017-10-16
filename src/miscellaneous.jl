@@ -37,3 +37,9 @@ function solve(Xᵗ, y, t = 'N')
     Base.LinAlg.LAPACK.potri!('U', XᵗXⁱ);
     Base.LinAlg.BLAS.symv('U', XᵗXⁱ, Xᵗ * y), Symmetric(XᵗXⁱ)
 end
+function solve!(XᵗXⁱ, Xᵗ, y, t = 'N', coef = 0.0)
+    Base.LinAlg.BLAS.syrk!('U', t, 1.0, Xᵗ, coef, XᵗXⁱ)
+    Base.LinAlg.LAPACK.potrf!('U', XᵗXⁱ);
+    Base.LinAlg.LAPACK.potri!('U', XᵗXⁱ);
+    Base.LinAlg.BLAS.symv('U', XᵗXⁱ, Xᵗ * y), Symmetric(XᵗXⁱ)
+end

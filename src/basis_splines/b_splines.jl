@@ -85,34 +85,3 @@ end
 function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Matrix{T}, Φᵗ, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
     BSpline{K, p, T}(knots, coef, S, b, Φᵗ, y, k)
 end
-
-
-###Slow, despite aggressive inlining. The fact it isn't reusing the calculation of lower order splines is the problem.
-@inline function recursive_B_spline(x, t::Knots, ::Val{1}, k = find_k(t, x), kₓ = find_k(t, x))
-    if k == kₓ ## x on small side, so small half gets dropped => x "big"
-        (t[k] - x)/range(t, k, k-1)
-    else ##imples k - 1 == kₓ; x on big side; big gets dropped
-        (x - t[k-2])/range(t, k-1, k-2)
-    end
-end
-@inline function recursive_B_spline(x, t::Knots, vp::Val{p}, k = find_k(t, x), kₓ = find_k(t, x)) where p
-    if k == kₓ ### big x
-        (t[k] - x)/range(t, k, k-p) * recursive_b_lower(x, t, demote_val(vp), k, kₓ)
-    elseif k == kₓ + p
-        (x - t[k-p-1])/range(t, k-1, k-p-1) * recursive_b_upper(x, t, demote_val(vp), k-1, kₓ)
-    else
-        (x - t[k-p-1])/range(t, k-1, k-p-1) * recursive_B_spline(x, t, demote_val(vp), k-1, kₓ) + (t[k] - x)/range(t, k, k-p) * recursive_B_spline(x, t, demote_val(vp), k, kₓ)
-    end
-end
-@inline function recursive_b_lower(x, t::Knots, vp::Val{p}, k = find_k(t, x), kₓ = find_k(t, x)) where p
-    (t[k] - x)/range(t, k, k-p) * recursive_b_lower(x, t, demote_val(vp), k, kₓ)
-end
-@inline function recursive_b_upper(x, t::Knots, vp::Val{p}, k = find_k(t, x), kₓ = find_k(t, x)) where p
-    (x - t[k-p-1])/range(t, k-1, k-p-1) * recursive_b_upper(x, t, demote_val(vp), k-1, kₓ)
-end
-@inline function recursive_b_lower(x, t::Knots, vp::Val{1}, k = find_k(t, x), kₓ = find_k(t, x))
-    (t[k] - x)/range(t, k, k-1)
-end
-@inline function recursive_b_upper(x, t::Knots, vp::Val{1}, k = find_k(t, x), kₓ = find_k(t, x))
-    (x - t[k-2])/range(t, k-1, k-2)
-end

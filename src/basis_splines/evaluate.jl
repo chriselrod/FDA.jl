@@ -103,42 +103,114 @@ function sorteddeBoor!(out::Vector, d::Vector, x::Vector, t::Knots{q}, c, Vp::Va
     out
 end
 
-
-
-@inline fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots{p}) where p = fillΦ!(Φt, d, x, t, p)
-function fillΦ!(Φt::Matrix, d::Matrix, x::Vector, t::Knots, p::Int)
+@inline fillΦ!(Φt::AbstractMatrix, d::AbstractArray, x::AbstractVector, t::Knots{p}) where p = fillΦ!(Φt, d, x, t, p)
+function fillΦ_unthreaded!(Φt::AbstractMatrix, d::AbstractArray, x::AbstractVector, t::DiscreteKnots, p::Int)
     for i ∈ eachindex(x)
         xᵢ = x[i]
-        k = find_k(t, xᵢ)
-        fillΦ_core!(Φt, d, t, i, k, xᵢ, p)
+        fillΦ_core!(Φt, d, t, i, xᵢ, p, find_k(t, xᵢ))
     end
 end
-fillΦ!(args...) = Threads.nthreads() == 1 ? fillΦ_unthreaded!(args...) : fillΦ_unthreaded!(args...)
-
-function fillΦ_unthreaded!(Φt::Matrix, d::Matrix, x::Vector, t::CardinalKnots, p::Int)
-    for i ∈ eachindex(x)
-        xᵢ = x[i]
-        k = find_k(t, xᵢ)
-        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, k, xᵢ, p) : fillΦ_core!(Φt, d, t, i, k, xᵢ, p)
-    end
-end
-function fillΦ_threaded!(Φt::Matrix, d::Matrix, x::Vector, t::CardinalKnots, p::Int)
+function fillΦ_threaded2!(Φt::AbstractMatrix, d::AbstractArray, x::AbstractVector, t::DiscreteKnots, p::Int)
     buffers = [d]
+    for i ∈ 2:Threads.nthreads()
+        push!(buffers, similar(d))
+    end
+ #   res = Vector{Tuple{Tuple{Int,Int},Vector{T}}}(length(x))
+    @threads for i ∈ eachindex(x)
+        xᵢ = x[i]
+        fillΦ_core!(Φt, buffers[Threads.threadid()], t, i, xᵢ, p, find_k(t, xᵢ))
+    #    fillΦ_core_threaded!(Φt, buffers[Threads.threadid()], t, i, xᵢ, p, find_k(t, xᵢ))
+    #    res[i] = fillΦ_core_threaded!(buffers[Threads.threadid()], t, i, xᵢ, p, find_k(t, xᵢ))
+    end
+    #@inbounds for i ∈ eachindex(res)
+    #    Φt[ res[i][1][1]:res[i][1][2], i] .= res[i][2]
+    #end
+end
+@inline fillΦ!(args...) = Threads.nthreads() == 1 ? fillΦ_unthreaded!(args...) : fillΦ_unthreaded!(args...)
+
+function fillΦ_unthreaded!(Φt::AbstractMatrix, d::AbstractArray, x::AbstractVector, t::CardinalKnots, p::Int)
+    for i ∈ eachindex(x)
+        xᵢ = x[i]
+        k = find_k(t, xᵢ)
+        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, d, t, i, xᵢ, p, k) : fillΦ_core!(Φt, d, t, i, xᵢ, p, k)
+    end
+end
+function fillΦ_threaded!(Φt::AbstractMatrix, d::AbstractArray, x::AbstractVector, t::CardinalKnots, p::Int)
+    buffers = [d]
+    range::Base.OneTo{Int64}
     for i ∈ 2:Threads.nthreads()
         push!(buffers, similar(d))
     end
     Threads.@threads for i ∈ eachindex(x)
         xᵢ = x[i]
         k = find_k(t, xᵢ)
-        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, buffers[Threads.threadid()], t, i, k, xᵢ, p) : fillΦ_core!(Φt, buffers[Threads.threadid()], t, i, k, xᵢ, p)
+        k > 2p && p + k < t.n ? fillΦ_coreKGP!(Φt, buffers[Threads.threadid()], t, i, xᵢ, p, k) : fillΦ_core!(Φt, buffers[Threads.threadid()], t, i, xᵢ, p, k)
     end
+
+end
+function fillΦ_threaded!(Φt::AbstractMatrix{T}, d::AbstractArray, x::AbstractVector{T}, t::DiscreteKnots, p::Int) where T
+    buffers = [d]
+    for i ∈ 2:Threads.nthreads()
+        push!(buffers, similar(d))
+    end
+
+
+    
+    function threadsfor_fun(onethread=false)
+        r = eachindex(x) # Load into local variable
+        lenr = length(r)
+        # divide loop iterations among threads
+        if onethread
+            tid = 1
+            len, rem = lenr, 0
+        else
+            tid = Threads.threadid()
+            len, rem = divrem(lenr, Threads.nthreads())
+        end
+        # not enough iterations for all the threads?
+        if len == 0
+            if tid > rem
+                return
+            end
+            len, rem = 1, 0
+        end
+        # compute this thread's iterations
+        f = 1 + ((tid-1) * len)
+        l = f + len - 1
+        # distribute remaining iterations evenly
+        if rem > 0
+            if tid <= rem
+                f = f + (tid-1)
+                l = l + tid
+            else
+                f = f + rem
+                l = l + rem
+            end
+        end
+        # run this thread's iterations
+        for i = f:l
+            local lidx = Base.unsafe_getindex(r,i)
+            
+            xᵢ = x[lidx]
+            fillΦ_core_threaded!(Φt, buffers[Threads.threadid()], t, lidx, xᵢ, p, find_k(t, xᵢ))
+        end
+    end
+    # Hack to make nested threaded loops kinda work
+
+#    in_threaded_loop[] = true
+    # the ccall is not expected to throw
+    ccall(:jl_threading_run, Ref{Void}, (Any,), threadsfor_fun)
+#    in_threaded_loop[] = false
+    nothing
+
 
 end
 
 
 ###Need to make decision about whether to deparametrize, or unroll the loops.
-function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots, l::Int, k::Int, x::T, p) where T
-    begin
+function fillΦ_coreKGP!(out::AbstractMatrix, d::AbstractArray, t::CardinalKnots, l::Int, x, p::Int, k::Int = find_k(t, x))
+    @inbounds begin
+    #begin
         denom = t.v * p
         α = (x - t[k-1]) / denom
         out[k-2,l] = 1-α
@@ -158,7 +230,7 @@ function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots, 
             out[k-1,l] *= α
             for j ∈ 2:1+p-r
                 α = (x - t[k-j]) / denom
-                d[(p-1)*(j-1)+1-r] = (1-α)*d[(p-1)j+1-r] #+ α*d[2+p-j-r,j]
+                d[(p-1)*(j-1)+1-r] = (1-α)*d[(p-1)j+2-r]
                 for i ∈ 3+p-j-r:p-j+1
                     d[i+(j-2)p] = α*d[i+(j-2)p] + (1-α)*d[i+(j-1)p]
                 end
@@ -170,8 +242,9 @@ function fillΦ_coreKGP!(out::Matrix{T}, d::AbstractArray{T}, t::CardinalKnots, 
 end
 
 """d is a buffer. It must be linearly indexable, muttable, and of length at least p^2. Eg, a simple Vector{Float64}(p^2) or Matrix{Float64}(p,p). It was initially required to be the latter, but all indices were made linear to accomodate more flexible choices in buffer, and making it easier to reuse the same chunks of memory."""
-function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots, l::Int, k::Int, x::T, p::Int) where T
-   begin
+function fillΦ_core!(out::AbstractMatrix, d::AbstractArray, t::Knots, l::Int, x, p::Int, k::Int = find_k(t, x))
+    @inbounds begin
+    #begin
        α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
        out[k-2,l] = 1-α
        out[k-1,l] = α
@@ -189,7 +262,7 @@ function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots, l::Int, k::
            out[k-1,l] *= α
            for j ∈ 2:1+p-r
                α = (x - t[k-j]) / (t[1+p+k-r-j] - t[k-j])
-               d[(p-1)*(j-1)+1-r] = (1-α)*d[(p-1)j+1-r] #+ α*d[2+p-j-r,j]
+               d[(p-1)*(j-1)+1-r] = (1-α)*d[(p-1)j+2-r]
                for i ∈ 3+p-j-r:p-j+1
                    d[i+(j-2)p] = α*d[i+(j-2)p] + (1-α)*d[i+(j-1)p]
                end
@@ -198,3 +271,79 @@ function fillΦ_core!(out::Matrix{T}, d::AbstractArray{T}, t::Knots, l::Int, k::
        end
    end
 end
+
+
+function fillΦ_core_threaded!(out::AbstractMatrix, d::AbstractArray, t::Knots, l::Int, x, p::Int, k::Int = find_k(t, x))
+    @inbounds begin
+    #begin
+       α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
+       d[p] = 1-α
+       d[p + 1] = α
+       for j ∈ 2:p
+           α = (x - t[k-j]) / (t[p+k-j] - t[k-j])
+           d[(p-1)j+2] = (1-α)
+           d[(p-1)j+3] = α
+       end
+       for r ∈ 2:p
+           α = (x - t[k-1]) / (t[p+k-r] - t[k-1])
+           d[p + 1 - r] = (1-α)*d[2+2p-r]
+           for i ∈ 2+p-r:p
+               d[i] = α*d[i] + (1-α)*d[i+p+1]
+           end
+           d[p + 1] *= α
+           for j ∈ 2:1+p-r
+               α = (x - t[k-j]) / (t[1+p+k-r-j] - t[k-j])
+               d[(p-1)j-r+3] = (1-α)*d[(p-1)*(j+1)+4-r]
+               for i ∈ 3+p-j-r:p-j+1
+                   d[i+(j-1)p+1] = α*d[i+(j-1)p+1] + (1-α)*d[i+j*p+1]
+               end
+               d[(p-1)j+3] *= α
+           end
+       end
+       for i ∈ 1:p+1
+            out[i+k-p-2,l] = d[i]
+       end
+   end
+end
+function fillΦ_core_threaded!(d::AbstractArray, t::Knots, l::Int, x, p::Int, k::Int = find_k(t, x))
+    @inbounds begin
+    #begin
+       α = (x - t[k-1]) / (t[p+k-1] - t[k-1])
+       d[p] = 1-α
+       d[p + 1] = α
+       for j ∈ 2:p
+           α = (x - t[k-j]) / (t[p+k-j] - t[k-j])
+           d[(p-1)j+2] = (1-α)
+           d[(p-1)j+3] = α
+       end
+       for r ∈ 2:p
+           α = (x - t[k-1]) / (t[p+k-r] - t[k-1])
+           d[p + 1 - r] = (1-α)*d[2+2p-r]
+           for i ∈ 2+p-r:p
+               d[i] = α*d[i] + (1-α)*d[i+p+1]
+           end
+           d[p + 1] *= α
+           for j ∈ 2:1+p-r
+               α = (x - t[k-j]) / (t[1+p+k-r-j] - t[k-j])
+               d[(p-1)j-r+3] = (1-α)*d[(p-1)*(j+1)+4-r]
+               for i ∈ 3+p-j-r:p-j+1
+                   d[i+(j-1)p+1] = α*d[i+(j-1)p+1] + (1-α)*d[i+j*p+1]
+               end
+               d[(p-1)j+3] *= α
+           end
+       end
+       out = d[1:p+1]
+   end
+   (k-p-1, k-1), out
+end
+# + 2 + p - k
+
+
+
+
+
+
+
+
+
+

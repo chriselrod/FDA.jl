@@ -82,8 +82,13 @@ end
 end
 @inline Base.getindex(t::DiscreteKnots, i) = t.v[i]
 
-@inline find_k(t::DiscreteKnots{p}, x) where p = x >= t.max ? t.n + p : searchsortedfirst(t.v, x, lt = <=)
-@inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
+@inline find_k(t::DiscreteKnots{p}, x::Real) where p = x >= t.max ? t.n + p : searchsortedfirst(t.v, x, lt = <=)
+@inline find_k(t::CardinalKnots{p}, x::Real) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
+@inline function find_k(t::DiscreteKnots{p}, x) where p
+    xr = real(x)
+    xr >= t.max ? t.n + p : searchsortedfirst(t.v, xr, lt = <=)
+end
+@inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(real(x) - t.min, t.v)) + p + 1
 
 unique(t::CardinalKnots) = t.n
 unique(t::DiscreteKnots) = t.unique

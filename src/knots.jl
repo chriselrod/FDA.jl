@@ -23,6 +23,13 @@ end
 intervals(knots::CardinalKnots) = intervals(knots, knots.done - knots.v)
 intervals(knots::DiscreteKnots{p}) where p = intervals(knots, knots.n + p - 1)
 
+function CardinalKnots(x::Vector{T}, k::Int, ::Val{p}, ::Val{true}) where {p,T}
+    miv = x[1]; mav = x[2];
+    nm1 = k - p
+    δ = (mav - miv)/ nm1
+    δpoo5 = δ * 0.005
+    CardinalKnots{p,T}( miv - δpoo5, mav + δpoo5, δ*(100nm1+1)/100nm1, nm1+1, mav + 2δpoo5, p+1, p+nm1+1)
+end
 function CardinalKnots(x::Vector{T}, k::Int, ::Val{p}) where {p,T}
     miv, mav = extrema(x)
     nm1 = k - p
@@ -82,11 +89,39 @@ end
 end
 @inline Base.getindex(t::DiscreteKnots, i) = t.v[i]
 
-@inline find_k(t::DiscreteKnots{p}, x::Real) where p = x >= t.max ? t.n + p : searchsortedfirst(t.v, x, lt = <=)
+function k_structure!(x::AbstractVector, y::AbstractVector, t::Knots, p)
+    n = length(x)
+    coef_count = t.n + p - 1
+    x_member = sortperm(x)
+    x .= @view(x[x_member])
+    y .= @view(y[x_member])
+    min_k = Vector{Int}(coef_count)
+    max_k = Vector{Int}(coef_count)
+    last_k = p+2
+    min_k[1:p+1] .= 1
+    for i ∈ 1:n
+#    @inbounds for i ∈ 1:n
+        new_k = find_k(t, x[i], last_k)
+        new_k == last_k || begin
+            for j ∈ old_k:new_k-1
+                min_k[j] = i
+                max_k[j-p] = i - 1
+            end
+        end
+        x_member[i] = new_k
+        last_k = new_k
+    end
+    max_k[coef_count-p:coef_count] .= n
+    x_member, min_k, max_k
+end
+
+@inline find_k(t::CardinalKnots, x, start) = find_k(t, x)
+@inline find_k(t::DiscreteKnots{p}, x::Real, start) where p = x >= t.max ? t.n + p : start - 1 + searchsortedfirst( @view(t.v[start:end]), x, Base.Order.Lt(<=) )
+@inline find_k(t::DiscreteKnots{p}, x::Real) where p = x >= t.max ? t.n + p : searchsortedfirst(t.v, x, Base.Order.Lt(<=))
 @inline find_k(t::CardinalKnots{p}, x::Real) where p = convert(Int, cld(x - t.min, t.v)) + p + 1
 @inline function find_k(t::DiscreteKnots{p}, x) where p
     xr = real(x)
-    xr >= t.max ? t.n + p : searchsortedfirst(t.v, xr, lt = <=)
+    xr >= t.max ? t.n + p : searchsortedfirst(t.v, xr, Base.Order.Lt(<=))
 end
 @inline find_k(t::CardinalKnots{p}, x) where p = convert(Int, cld(real(x) - t.min, t.v)) + p + 1
 

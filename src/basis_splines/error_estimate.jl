@@ -18,9 +18,10 @@ function confidence_width(s::BSpline{K, p, T}, x) where {K, p, T}
     fillΦ3!(s.buffer, s.mat_buffer, x, s.knots, p, k)
     out = zero(T)
     for i ∈ 1:p+1
-        out += s.ΦᵗΦ⁻.data[i, i] * s.buffer[i]^2
+        bufferᵢ = s.buffer[i]
+        out += s.ΦᵗΦ⁻.data[i, i] * bufferᵢ^2
         for j ∈ 1:i-1
-            out += 2s.ΦᵗΦ⁻.data[j+p+1, i+p+1] * s.buffer[i] * s.buffer[j]
+            out += 2s.ΦᵗΦ⁻.data[j+p+1, i+p+1] * bufferᵢ * s.buffer[j]
         end
     end
     out

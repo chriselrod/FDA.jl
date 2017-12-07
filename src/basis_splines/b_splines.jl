@@ -68,20 +68,28 @@ function BSpline(x::Vector, y::Vector, knotv::Vector, vp::Val{p} = Val{3}()) whe
     BSpline(x, y, k, knots)
 end
 
-function BSpline(x::Vector{T}, y::Vector, ::Val{p}, k::Int = div(length(x),5)) where {T, p}
+function BSpline(x::Vector{T}, y::Vector, ::Val{p} = Val{3}(), k::Int = div(length(x),10)) where {T, p}
+    simultaneous_sort!(x, y)
     BSpline(x, y, k, CardinalKnots(x, k, Val{p}()))
 end
-
-
-
-function BSpline(x::Vector{T}, y::Vector, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
-    n = length(x)
-    Φᵗ = zeros(promote_type(T, Float64), k, n)
-    buffer = Matrix{T}(p+1,p+1)
-    fillΦ!(Φᵗ, buffer, x, knots)
-    β, ΦᵗΦ⁻ = solve(Φᵗ, y)
-    BSpline(knots, [β], ΦᵗΦ⁻, buffer, Φᵗ, y, Val{p}(), k)
+function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10)) where {T, p}
+    simultaneous_sort!(x, y)
+    BSpline(x, y, k, CardinalKnots(x, k, Val{3}()))
 end
-function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Matrix{T}, Φᵗ, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
+
+function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
+    m = p+1
+    simultaneous_sort!(x, y)
+    x_member, min_k, max_k = k_structure!(x, y, knots, p)
+    n = length(x)
+    Φᵗ = zeros(promote_type(T, Float64), m, n)
+    fillΦ_sorted!(Φᵗ, x, knots, x_member)
+    Φ = Φᵗ'
+    band = Array{Float64, 2}(uninitialized, m, k)
+    fill_band!(band, Φ, min_k, max_k, Val{p}())
+    β, ΦᵗΦ⁻ = solve(Φᵗ, y)
+    BSpline(knots, [β], ΦᵗΦ⁻, Φ, Φᵗ, y, Val{p}(), k)
+end
+@inline function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Matrix{T}, Φᵗ, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
     BSpline{K, p, T}(knots, coef, S, b, Φᵗ, y, k)
 end

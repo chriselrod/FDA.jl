@@ -2,7 +2,7 @@ __precompile__()
 
 module FDA
 
-using Requires, BandedMatrices
+using Compat, BandedMatrices, StructsOfArrays, Base.Cartesian
 
 export  BSpline,
         FourierBasis,
@@ -17,11 +17,10 @@ include("knots.jl")
 include("basis_splines/b_splines.jl")
 include("basis_splines/penalty.jl")
 include("basis_splines/evaluate.jl")
+include("basis_splines/error_estimate.jl")
 include("fourier_basis/fourier.jl")
 include("miscellaneous.jl")
 
-@require NullableArrays BSpline(x::NullableArrays.NullableArray, y::NullableArrays.NullableArray, a...) = BSpline(convert(Vector{Float64}, x), convert(Vector{Float64}, y), a...)
-@require Plots include("plotting.jl")
 
 
 end # module

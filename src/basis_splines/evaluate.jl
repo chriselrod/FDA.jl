@@ -44,7 +44,7 @@ end
 deBoor(x, t::Knots{p}, c, k = find_k(t, x)) where p = deBoor(x, t, c, Val{p}(), k)
 deBoor(x::T, t, c, vp::Val{p}, k = find_k(t, x)) where {p,T} = deBoor!(Vector{promote_type(Float64,T)}(p+1), x, t, c, vp, k)
 
-function deBoor!(d::Vector, x, t::Knots{q}, c, vp::Val{p}, k = find_k(t, x)) where {p, q}
+function deBoor!(d::AbstractVector, x, t::Knots{q}, c, vp::Val{p}, k = find_k(t, x)) where {p, q}
     for j ∈ 1:p+1
         d[p+2-j] = c[j+k-q-2]
     end
@@ -52,40 +52,79 @@ function deBoor!(d::Vector, x, t::Knots{q}, c, vp::Val{p}, k = find_k(t, x)) whe
     d[1]
 end
 
-deBoorCore(d::Vector, x, t::Knots{p}, c, k = find_k(t, x)) where p = deBoorCore(d, x, t, c, Val{p}(), k)
+deBoorCore(d::AbstractArray, x, t::Knots{p}, c, k = find_k(t, x)) where p = deBoorCore(d, x, t, c, Val{p}(), k)
 
 #would @inline improve performance?
-function deBoorCore!(d::Vector, x, t::DiscreteKnots, c, ::Val{p}, k = find_k(t, x)) where p
-    for r ∈ 1:p, j ∈ 1:1+p-r
-        α = (x - t[k-j]) / (t[p+1+k-r-j] - t[k-j])
-        d[j] = α*d[j] + (1-α)*d[j+1]
+@generated function deBoorCore!(x, t::DiscreteKnots, c, ::Val{p}, k = find_k(t, x)) where p
+    quote
+        @nexprs $p r -> begin
+            @nexprs $p+1-r j -> begin
+                α = (x - t[k-j]) / (t[p+1+k-r-j] - t[k-j])
+                d_{j} = α*d_{j} + (1-α)*d_{j+1}
+            end
+        end
+        d_1
     end
 end
-function deBoorCore!(d::Vector, x, t::CardinalKnots, c, ::Val{p}, k = find_k(t, x)) where p
-    denom = t.v * p
-    for r ∈ 1:p
-        for j ∈ 1:1+p-r
-            α = (x - t[k-j]) / denom
-            d[j] = α*d[j] + (1-α)*d[j+1]
+@generated function deBoorCore!(x, t::CardinalKnots, c, ::Val{p}, k = find_k(t, x)) where p
+    quote
+        denom = t.v * p
+        @nexprs $p r -> begin
+            @nexprs 1+$p-r j -> begin
+                α = (x - t[k-j]) / denom
+                d_{j} = α*d_{j} + (1-α)*d_{j+1}
+            end
+            denom -= t.v
         end
-        denom -= t.v
+        d_1
     end
 end
 
 
-function deBoor!(out::Vector, d::Vector, x::Vector, t::Knots{q}, c, Vp::Val{p}) where {q, p}
-    for i ∈ eachindex(x)
-        xᵢ = x[i]
-        k = find_k(t, xᵢ)
-        for j ∈ 1:p+1
-            d[p+2-j] = c[j+k-q-2]
+@generated function deBoor!(out::AbstractVector, x::AbstractVector, t::DiscreteKnots{q}, x_member, c, Vp::Val{p}) where {q, p}
+    m = p + 1
+    quote
+        for i ∈ eachindex(x)
+            xᵢ = x[i]
+            k = x_member[i]
+            @nexprs $m j -> begin
+                d_{p+2-j} = c[j+k-q-2]
+            end
+            @nexprs $p r -> begin
+                @nexprs $p+1-r j -> begin
+                    α = (x - t[k-j]) / (t[p+1+k-r-j] - t[k-j])
+                    d_{j} = α*d_{j} + (1-α)*d_{j+1}
+                end
+            end
+            out[i] = d_1
         end
-        deBoorCore!(d, xᵢ, t, c, Vp, k)
-        out[i] = d[1]
+        out
     end
-    out
 end
-function sorteddeBoor!(out::Vector, d::Vector, x::Vector, t::Knots{q}, c, Vp::Val{p}) where {q, p}
+@generated function deBoor!(out::AbstractVector, x::AbstractVector, t::CardinalKnots{q}, x_member, c, Vp::Val{p}) where {q, p}
+    m = p + 1
+    quote
+        for i ∈ eachindex(x)
+            xᵢ = x[i]
+            k = x_member[i]
+            @nexprs $m j -> begin
+                d_{p+2-j} = c[j+k-q-2]
+            end
+            denom = t.v * p
+            @nexprs $p r -> begin
+                @nexprs 1+$p-r j -> begin
+                    α = (x - t[k-j]) / denom
+                    d_{j} = α*d_{j} + (1-α)*d_{j+1}
+                end
+                denom -= t.v
+            end
+            out[i] = d_1
+        end
+        out
+    end
+end
+
+function sorteddeBoor!(out::AbstractVector, d::AbstractArray, x::AbstractVector, t::Knots{q}, c, Vp::Val{p}) where {q, p}
     k = q+2
     t_next = t[k]
     for i ∈ eachindex(x)
@@ -116,7 +155,7 @@ function fillΦ_threaded2!(Φt::AbstractMatrix, d::AbstractArray, x::AbstractVec
         push!(buffers, similar(d))
     end
  #   res = Vector{Tuple{Tuple{Int,Int},Vector{T}}}(length(x))
-    @threads for i ∈ eachindex(x)
+    Threads.@threads for i ∈ eachindex(x)
         xᵢ = x[i]
         fillΦ_core!(Φt, buffers[Threads.threadid()], t, i, xᵢ, p, find_k(t, xᵢ))
     #    fillΦ_core_threaded!(Φt, buffers[Threads.threadid()], t, i, xᵢ, p, find_k(t, xᵢ))
@@ -271,7 +310,110 @@ function fillΦ_core!(out::AbstractMatrix, d::AbstractArray, t::Knots, l::Int, x
        end
    end
 end
+function fillΦ_sorted!(Φᵗ, x, t::CardinalKnots, x_member)
+    for i ∈ eachindex(x)
+        xᵢ = x[i]
+        k = x_member[i]
+        (k > 2p) && (p + k < t.n) ? fillΦ_flatKGP!(Φᵗ, t, i, xᵢ, k) : fillΦ_flat!(Φᵗ, t, i, xᵢ, k)
+    end
+end
+function fillΦ_sorted!(Φᵗ, x, t::DiscreteKnots, x_member)
+    for i ∈ eachindex(x)
+        fillΦ_flat!(Φᵗ, t, i, x[i], x_member[i])
+    end
+end
+@generated function fillΦ_flat!(out::AbstractMatrix, t::Knots{p}, l::Int, x, k::Int = find_k(t, x)) where p
+    pm1 = p - 1
+    m = p + 1
+    dp = Symbol("d_", p)
+    dm = Symbol("d_", m)
+    quote
+        @inbounds begin
+            #begin
+            α = (x - t[k-1]) / (t[$pm1+k] - t[k-1])
+            $dp = 1-α
+            $dm = α
+            @nexprs $pm1 j -> begin
+                α = (x - t[k-j+1]) / (t[$p+k-j+1] - t[k-j+1])
+                d_{$pm1*(j+1)+2} = (1-α)
+                d_{$pm1*(j+1)+3} = α
+            end
+            @nexprs $pm1 r -> begin
+                α = (x - t[k-1]) / (t[$pm1+k-r] - t[k-1])
+                d_{$p-r} = (1-α)*d_{$m+$p-r}
+                @nexprs r i -> begin
+                    d_{i+$p-r} = (1-α)*d_{$m+i+$p-r} + α*d_{i+$p-r}
+                end
+                $dm *= α
+                @nexprs $pm1-r j -> begin
+                    α = (x - t[k-j-1]) / (t[pm1+k-r-j] - t[k-j-1])
+                    d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
+                    @nexprs r i -> begin
+                        d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
+                    end
+                    d_{$pm1*j+1+$m} *= α
+                end
+            end
+            @nexprs $m i -> begin
+                out[i,l] = d_{i}
+            end
+        end
+    end
+end
 
+@generated function texpr(A, ::Val{m}, ::Val{n}) where {m, n}
+    quote
+        out = zero(eltype(A))
+        @nexprs $m i -> begin
+            @nexprs $n-i+1 j -> begin
+                out += A[j+i-1, i]
+            end
+        end
+        out
+    end
+end
+
+@generated function fillΦ_flatKGP!(out::AbstractMatrix, t::CardinalKnots{p}, l::Int, x, k::Int = find_k(t, x)) where p
+    pm1 = p - 1
+    m = p + 1
+    dp = Symbol("d_", p)
+    dm = Symbol("d_", m)
+    quote
+        @inbounds begin
+        #begin
+            denom = t.v * $p
+            α = (x - t[k-1]) / denom
+            $dp = 1-α
+            $dm = α
+            @nexprs $pm1 j -> begin
+                α = (x - t[k-j-1]) / denom
+                d_{$pm1*j+$m} = (1-α)
+                d_{$pm1*j+1+$m} = α
+            end
+            denom -= t.v
+            @nexprs $pm1 r -> begin
+                α = (x - t[k-1]) / denom
+                d_{$p-r} = (1-α)*d_{$p-r+$m}
+                @nexprs r i -> begin
+                    d_{i+$p-r} = (1-α)*d_{i+$p-r+$m} + α*d_{i+$p-r}
+                end
+                $dm *= α
+                @nexprs $pm1-r j -> begin
+                    α = (x - t[k-j-1]) / denom
+                    d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
+                    @nexprs r i -> begin
+                        d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
+                    end
+                    d_{$pm1*j+1+$m} *= α
+                end
+                denom -= t.v
+            end
+            @nexprs $m i -> begin
+                out[i,l] = d_{i}
+            end
+        end
+    end
+end
 
 function fillΦ_core_threaded!(out::AbstractMatrix, d::AbstractArray, t::Knots, l::Int, x, p::Int, k::Int = find_k(t, x))
     @inbounds begin
@@ -339,7 +481,44 @@ end
 # + 2 + p - k
 
 
-
+@generated function fill_band!(band::AbstractMatrix{T}, Φ::AbstractMatrix{T},  min_k, max_k, ::Val{p}) where {T,p}
+    m = p + 1
+    quote
+        n = size(band,2)
+        @nexprs $p i -> begin
+            minᵢ = min_k[i]
+            for j ∈ $m-i+1:$p
+                jind = i+j-$m
+                t = zero(T)
+                for k ∈ minᵢ:max_k[jind]
+                    t += Φ[k,i]*Φ[k,jind]
+                end
+                band[j,i] = t
+            end
+            t = zero(T)
+            for k ∈ minᵢ:max_k[i]
+                t += abs2(Φ[k,i])
+            end
+            band[$m,i] = t
+        end
+        for i ∈ $m:n
+            minᵢ = min_k[i]
+            @nexprs $p j -> begin
+                jind = i+j-$m
+                t = zero(T)
+                for k ∈ minᵢ:max_k[jind]
+                    t += Φ[k,i]*Φ[k,jind]
+                end
+                band[j,i] = t
+            end
+            t = zero(T)
+            for k ∈ minᵢ:max_k[i]
+                t += abs2(Φ[k,i])
+            end
+            band[$m,i] = t
+        end
+    end
+end
 
 
 

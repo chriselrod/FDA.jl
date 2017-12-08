@@ -3,12 +3,13 @@ Base.@pure value_deriv(::Val{p}, ::Val{d}) where {p,d} = Val{p-d}()
 @generated demote_val(::Val{p}) where p = Val{p-1}()
 
 #Every time a derivative is called, push on
-struct BSpline{K, p, T}
+struct BSpline{p, K, T}
   knots::K
   coefficients::Vector{Vector{T}}
   ΦᵗΦ⁻::Symmetric{T,Matrix{T}}
-  buffer::Matrix{T}
+  Φ::Vector{Vector{T}}
   Φᵗ::Matrix{T}
+  Φᵗy::Vector{T}
   y::Vector{T}
   k::Int
 end
@@ -69,27 +70,29 @@ function BSpline(x::Vector, y::Vector, knotv::Vector, vp::Val{p} = Val{3}()) whe
 end
 
 function BSpline(x::Vector{T}, y::Vector, ::Val{p} = Val{3}(), k::Int = div(length(x),10)) where {T, p}
-    simultaneous_sort!(x, y)
+#    simultaneous_sort!(x, y)
     BSpline(x, y, k, CardinalKnots(x, k, Val{p}()))
 end
-function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10)) where {T, p}
-    simultaneous_sort!(x, y)
-    BSpline(x, y, k, CardinalKnots(x, k, Val{3}()))
-end
+#function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10)) where {T}
+#    simultaneous_sort!(x, y)
+#    BSpline(x, y, k, CardinalKnots(x, k, Val{3}()))
+#end
 
 function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     m = p+1
-    simultaneous_sort!(x, y)
     x_member, min_k, max_k = k_structure!(x, y, knots, p)
-    n = length(x)
-    Φᵗ = zeros(promote_type(T, Float64), m, n)
+    Φᵗ = zeros(promote_type(T, Float64), m, length(x))
     fillΦ_sorted!(Φᵗ, x, knots, x_member)
-    Φ = Φᵗ'
-    band = Array{Float64, 2}(uninitialized, m, k)
-    fill_band!(band, Φ, min_k, max_k, Val{p}())
-    β, ΦᵗΦ⁻ = solve(Φᵗ, y)
-    BSpline(knots, [β], ΦᵗΦ⁻, Φ, Φᵗ, y, Val{p}(), k)
+#    for i ∈ 1:m
+#        println(Φᵗ[i,end-11:end])
+#    end
+#    println(sum(Φᵗ,1))
+    Φ = jagged_semiband_transpose(Φᵗ, x_member, min_k, max_k, p)
+    ΦᵗΦ = Array{Float64, 2}(uninitialized, m, k)
+    fill_band!(ΦᵗΦ, Φ, min_k, max_k, Val{p}())
+    β, Φᵗy, ΦᵗΦ⁻ = solve!(Array{Float64, 2}(uninitialized, k, k), ΦᵗΦ, Φ, y, min_k, max_k, Val{p}())
+    BSpline(knots, [β], ΦᵗΦ⁻, Φ, Φᵗ, Φᵗy, y, Val{p}(), k)
 end
-@inline function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Matrix{T}, Φᵗ, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
-    BSpline{K, p, T}(knots, coef, S, b, Φᵗ, y, k)
+@inline function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Vector{Vector{T}}, Φᵗ, Φᵗy, y, ::Val{p}, k) where {p, K <: Knots{p}, T}
+    BSpline{p, K, T}(knots, coef, S, b, Φᵗ, Φᵗy, y, k)
 end

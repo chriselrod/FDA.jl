@@ -39,6 +39,16 @@ function solve(Xᵗ, y, t::Char = 'N')
     A_mul_B!(β, Xᵗ, y)
     Base.LinAlg.BLAS.symv('U', XᵗXⁱ, Xᵗ * y), Symmetric(XᵗXⁱ)
 end
+function solve!(XᵗXⁱ, XᵗX, X::Vector{Vector{T}}, y, min_k, max_k, ::Val{p}) where {p,T}
+    chol!(XᵗX, Val{p}())
+    inv!(XᵗXⁱ, XᵗX, Val{p}())###
+    triangle_crossprod!(XᵗXⁱ)
+    Xᵗy = reinterpret(T, max_k)
+    semiband_mul_y!(Xᵗy, X, y, min_k)
+    β = reinterpret(T, min_k)
+    Base.LinAlg.BLAS.symv!('L', 1.0, XᵗXⁱ, Xᵗy, 0.0, β)
+    β, Xᵗy, Symmetric(XᵗXⁱ, :L)
+end
 function solve!(XᵗXⁱ, Xᵗ, y, t::Char = 'N', coef = 0.0)
     Base.LinAlg.BLAS.syrk!('U', t, 1.0, Xᵗ, coef, XᵗXⁱ)
     Base.LinAlg.LAPACK.potrf!('U', XᵗXⁱ);
@@ -56,6 +66,41 @@ function inv3!(A, B)
     Base.LinAlg.LAPACK.potri!('U', A)
 end
 
+function triangle_crossprod!(A::AbstractMatrix{T}) where T
+    n = size(A,1)
+    @inbounds for i ∈ 1:n
+        temp = zero(T)
+        for k ∈ i:n
+            temp += abs2(A[k,i])
+        end
+        A[i,i] = temp
+        for j ∈ i+1:n
+            temp = zero(T)
+            for k ∈ j:n
+                temp += A[k,j] * A[k,i]
+            end
+            A[j,i] = temp
+        end
+    end
+end
+@generated function triangle_crossprod!(A::AbstractMatrix{T}, ::Val{c}) where {T,c}
+    quote
+        @nexprs $c i -> begin
+            temp = zero(T)
+            @nexprs $c-i+1 k -> begin
+                @inbounds temp += abs2(A[k+i-1,i])
+            end
+            @inbounds A[i,i] = temp
+            @nexprs $c-i j -> begin
+                temp = zero(T)
+                @nexprs $c-j+1 k -> begin
+                    @inbounds temp += A[k+j-1,j+i] * A[k+j-1,i]
+                end
+                @inbounds A[j+i,i] = temp
+            end
+        end
+    end
+end
 
 function simultaneous_sort!(x::AbstractArray{T}, y::AbstractArray{T}) where T
     issorted(x, Base.Order.ForwardOrdering()) || sort!(StructOfArrays{Tuple{T,T},1,Tuple{Vector{T},Vector{T}}}((x,y)), QuickSort, Base.Order.ForwardOrdering())
@@ -76,46 +121,16 @@ function chol!(U::AbstractArray{<:Real,2}, Σ::AbstractArray{<:Real,2})
         U[i,i] = √U[i,i]
     end
 end
-function inv!(A::AbstractArray{T,2}, U::AbstractArray{T,2}) where {T <: Real}
-#    @inbounds for i ∈ 1:size(U,1)
-    for i ∈ 1:size(U,1)
-        A[i,i] = 1 / U[i,i]
-        for j ∈ i+1:size(U,1)
-            Aⱼᵢ = zero(T)
-            for k ∈ i:j-1
-                Aⱼᵢ += U[k,j] * A[k,i]
-            end
-            A[j,i] = - Aⱼᵢ / U[j,j]
-        end
-    end
-    A
-end
 
-
-function chol!(U::AbstractArray{<:Real,2}, Σ::AbstractArray{<:Real,2})
-    #    @inbounds for i ∈ 1:size(U,1)
-        for i ∈ 1:size(U,1)
-            U[i,i] = Σ[i,i]
-            for j ∈ 1:i-1
-                U[j,i] = Σ[j,i]
-                for k ∈ 1:j-1
-                    U[j,i] -= U[k,i] * U[k,j]
-                end
-                U[j,i] /= U[j,j]
-                U[i,i] -= U[j,i]^2
-            end
-            U[i,i] = √U[i,i]
-        end
-    end
-@generated function chol!(U::AbstractArray{T,2}, Σ::AbstractArray{T,2}, ::Val{p}) where {T,p}
+@generated function chol!(U::AbstractArray{T,2}, ::Val{p}) where {T,p}
     m = p+1
     quote
     #    @inbounds for i ∈ 1:size(U,2)
         @nexprs $p i -> begin
-            Uᵢᵢ = Σ[$m,i]
+            Uᵢᵢ = U[$m,i]
             @nexprs i-1 l -> begin
                 j = l - i + $m
-                Uⱼᵢ = Σ[j,i]
+                Uⱼᵢ = U[j,i]
                 @nexprs l-1 k -> begin
                     Uⱼᵢ -= U[k-i+$m,i] * U[k-l+$m,l]
                 end
@@ -128,10 +143,10 @@ function chol!(U::AbstractArray{<:Real,2}, Σ::AbstractArray{<:Real,2})
 
         for i ∈ $m:size(U,2)
             
-            Uᵢᵢ = Σ[$m,i]
+            Uᵢᵢ = U[$m,i]
             @nexprs $p j -> begin
                 l = j + i - $m
-                Uⱼᵢ = Σ[j,i]
+                Uⱼᵢ = U[j,i]
                 @nexprs j-1 k -> begin
                     Uⱼᵢ -= U[k,i] * U[k-j+$m,l]
                 end
@@ -181,41 +196,41 @@ end
     end
 end
 
-function inv2!(A::AbstractArray{T,2}, U::AbstractArray{T,2}, ::Val{p}) where {T, p}
-#    @inbounds for i ∈ 1:size(U,1)
-    for i ∈ 1:size(A,1)
-        A[i,i] = 1 / U[$m,i]
-        for j ∈ i+1:size(A,1)
-            Aⱼᵢ = zero(T)
-            for k ∈ max(i,j-p):j-1
-                Aⱼᵢ += U[k+$m-j,j] * A[k,i]
-            end
-            A[j,i] = - Aⱼᵢ / U[$m,j]
+
+semiband_mul_y(X, y::AbstractVector{T}, min_k) where T = semiband_mul_y!(Vector{T}(length(min_k)), X, y, min_k)
+function semiband_mul_y!(out, X::Vector{Vector{T}}, y::AbstractVector, min_k) where {T}
+    for i ∈ eachindex(out)
+        Xᵢ = X[i]
+        temp = zero(T)
+        minₖm1 = min_k[i] - 1
+        for j ∈ eachindex(Xᵢ)
+            temp += y[j + minₖm1] * Xᵢ[j]
         end
+        out[i] = temp
     end
-    A
+    out
 end
 
-function sym_mul!(β, S)
-    
-end
-
-n = 20;
-function check_symv(n)
-    A = randn(n, 2n) |> X -> X * X';
-    x = rand(n);
-    gemv = A * x
-    symv = Base.LinAlg.BLAS.symv('U', A, x)
-    correct = gemv .≈ symv
-    correct_count = sum(correct)
-    eight = min(8,n)
-    correct_in_first_8 = sum(@view(correct[1:eight]))
-    n, correct_count, n - correct_count, correct_in_first_8, eight - correct_in_first_8
-end
-function check_symv2(n)
-    A = randn(n, 2n) |> X -> X * X';
-    x = rand(n);
-    gemv = A * x
-    symv = Base.LinAlg.BLAS.symv('L', A, x)
-    gemv .≈ symv
+function jagged_semiband_transpose(Xᵗ::AbstractMatrix{T}, x_member::AbstractVector{Int}, min_k::AbstractVector{Int}, max_k::AbstractVector{Int}, p::Int) where {T}
+    k = length(min_k)
+    out = Vector{Vector{T}}(uninitialized, k)
+    for i ∈ 1:k
+        min_k_ind = min_k[i]
+        last_x_member = x_member[min_k_ind]
+        temp_l = 1 + max_k[i] - min_k_ind
+        temp = Vector{T}(uninitialized, temp_l)
+        row = min(1 + p, i)
+        for j ∈ eachindex(temp)
+            ind = min_k_ind + j - 1
+            current_x_member = x_member[ind]
+            if last_x_member != current_x_member
+                row -= current_x_member - last_x_member
+                last_x_member = current_x_member
+            end
+            temp[j] = Xᵗ[ row , ind ]
+        end
+        out[i] = temp
+    end
+ #   println("Total size of out:", sum(length, out))
+    out
 end

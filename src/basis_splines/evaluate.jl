@@ -4,9 +4,12 @@ macro threaded(expr)
    Threads.nthreads() == 1 ? expr : :(Threads.@threads($:(expr)))
 end
 
-@inline evaluate(s::BSpline, x::AbstractArray, args...) = evaluate!(similar(x), s, x, args...)
-function evaluate!(out, s::BSpline{K, p}, x::AbstractArray) where {K, p}
-    deBoor!(out, s.buffer, x, s.knots, s.coefficients[1], Val{p}())
+@inline function evaluate(s::BSpline{p}, x::AbstractVector) where {p}
+    deBoor!(similar(x), x, s.knots, s.coefficients[1], Val{p}())
+end
+
+@inline function evaluate!(out, s::BSpline{p}, x::AbstractVector) where p
+    deBoor!(out, x, s.knots, s.coefficients[1], Val{p}())
 end
 
 ###First 5 derivates may be wrong?!?!?
@@ -15,15 +18,15 @@ end
 #julia> d2_fd = ForwardDiff.derivative.(y -> ForwardDiff.derivative(x -> deBoor(x, bs.knots, bs.coefficients[1], Val{3}(), find_k(bs.knots, ForwardDiff.value(ForwardDiff.value(x)))), y), tt);
 
 ###d1 = evaluate(bs, tt, Val{1}())
-function evaluate!(out, s::BSpline{K, p}, x::AbstractArray, vd::Val{d}) where {K, p, d}
+function evaluate!(out, s::BSpline{p}, x::AbstractArray, vd::Val{d}) where {p, d}
     add_derivative_coefs!(s, vd)
-    deBoor!(out, s.buffer, x, s.knots, s.coefficients[d+1], value_deriv(Val{p}(), Val{d}()))
+    deBoor!(out, x, s.knots, s.coefficients[d+1], value_deriv(Val{p}(), Val{d}()))
 end
-function evaluate(s::BSpline{K, p}, x::T, args...) where {T <: Real, K, p}
+function evaluate(s::BSpline{p}, x::T, args...) where {T <: Real, p}
     deBoor!(s.buffer, x, s.knots, s.coefficients[1], Val{p}(), find_k(s.knots, x))
 end
 
-function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: DiscreteKnots, p, d}
+function add_derivative_coefs!(s::BSpline{p, K}, vd::Val{d}) where {K <: DiscreteKnots, p, d}
     for i ∈ length(s.coefficients):d #i is derivative being added
         coef = diff(s.coefficients[i])
         pmi = p - i + 1
@@ -33,7 +36,7 @@ function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: Discret
         push!(s.coefficients, coef)
     end
 end
-function add_derivative_coefs!(s::BSpline{K, p}, vd::Val{d}) where {K <: CardinalKnots, p, d}
+function add_derivative_coefs!(s::BSpline{p, K}, vd::Val{d}) where {K <: CardinalKnots, p, d}
     for i ∈ length(s.coefficients):d #i is derivative being added; final length of coefs is d+1
         coef = diff(s.coefficients[i]) ./ s.knots.v
         push!(s.coefficients, coef)
@@ -44,12 +47,20 @@ end
 deBoor(x, t::Knots{p}, c, k = find_k(t, x)) where p = deBoor(x, t, c, Val{p}(), k)
 deBoor(x::T, t, c, vp::Val{p}, k = find_k(t, x)) where {p,T} = deBoor!(Vector{promote_type(Float64,T)}(p+1), x, t, c, vp, k)
 
-function deBoor!(d::AbstractVector, x, t::Knots{q}, c, vp::Val{p}, k = find_k(t, x)) where {p, q}
-    for j ∈ 1:p+1
-        d[p+2-j] = c[j+k-q-2]
+@generated function deBoor!(x, t::Knots{q}, c, vp::Val{p}, k = find_k(t, x)) where {p, q}
+    m = p + 1
+    quote
+        @nexprs $m j -> begin
+            d_{$p+2-j} = c[j+k-$q-2]
+        end
+        @nexprs $p r -> begin
+            @nexprs $p+1-r j -> begin
+                α = (x - t[k-j]) / (t[$p+1+k-r-j] - t[k-j])
+                d_{j} = α*d_{j} + (1-α)*d_{j+1}
+            end
+        end
+        d_1
     end
-    deBoorCore!(d, x, t, c, vp, k)
-    d[1]
 end
 
 deBoorCore(d::AbstractArray, x, t::Knots{p}, c, k = find_k(t, x)) where p = deBoorCore(d, x, t, c, Val{p}(), k)
@@ -59,7 +70,7 @@ deBoorCore(d::AbstractArray, x, t::Knots{p}, c, k = find_k(t, x)) where p = deBo
     quote
         @nexprs $p r -> begin
             @nexprs $p+1-r j -> begin
-                α = (x - t[k-j]) / (t[p+1+k-r-j] - t[k-j])
+                α = (x - t[k-j]) / (t[$p+1+k-r-j] - t[k-j])
                 d_{j} = α*d_{j} + (1-α)*d_{j+1}
             end
         end
@@ -81,18 +92,18 @@ end
 end
 
 
-@generated function deBoor!(out::AbstractVector, x::AbstractVector, t::DiscreteKnots{q}, x_member, c, Vp::Val{p}) where {q, p}
+@generated function deBoor!(out::AbstractVector, x::AbstractVector, t::DiscreteKnots{q}, c, Vp::Val{p}) where {q, p}
     m = p + 1
     quote
         for i ∈ eachindex(x)
             xᵢ = x[i]
-            k = x_member[i]
+            k = find_k(t, xᵢ)
             @nexprs $m j -> begin
-                d_{p+2-j} = c[j+k-q-2]
+                d_{$p+2-j} = c[j+k-$q-2]
             end
             @nexprs $p r -> begin
                 @nexprs $p+1-r j -> begin
-                    α = (x - t[k-j]) / (t[p+1+k-r-j] - t[k-j])
+                    α = (xᵢ - t[k-j]) / (t[$p+1+k-r-j] - t[k-j])
                     d_{j} = α*d_{j} + (1-α)*d_{j+1}
                 end
             end
@@ -101,19 +112,19 @@ end
         out
     end
 end
-@generated function deBoor!(out::AbstractVector, x::AbstractVector, t::CardinalKnots{q}, x_member, c, Vp::Val{p}) where {q, p}
+@generated function deBoor!(out::AbstractVector, x::AbstractVector, t::CardinalKnots{q}, c, ::Val{p}) where {q, p}
     m = p + 1
     quote
         for i ∈ eachindex(x)
             xᵢ = x[i]
-            k = x_member[i]
+            k = find_k(t, xᵢ)
             @nexprs $m j -> begin
-                d_{p+2-j} = c[j+k-q-2]
+                d_{$p+2-j} = c[j+k-$q-2]
             end
-            denom = t.v * p
+            denom = t.v * $p
             @nexprs $p r -> begin
                 @nexprs 1+$p-r j -> begin
-                    α = (x - t[k-j]) / denom
+                    α = (xᵢ - t[k-j]) / denom
                     d_{j} = α*d_{j} + (1-α)*d_{j+1}
                 end
                 denom -= t.v
@@ -310,7 +321,7 @@ function fillΦ_core!(out::AbstractMatrix, d::AbstractArray, t::Knots, l::Int, x
        end
    end
 end
-function fillΦ_sorted!(Φᵗ, x, t::CardinalKnots, x_member)
+function fillΦ_sorted!(Φᵗ, x, t::CardinalKnots{p}, x_member) where p
     for i ∈ eachindex(x)
         xᵢ = x[i]
         k = x_member[i]
@@ -334,7 +345,7 @@ end
             $dp = 1-α
             $dm = α
             @nexprs $pm1 j -> begin
-                α = (x - t[k-j+1]) / (t[$p+k-j+1] - t[k-j+1])
+                α = (x - t[k-j-1]) / (t[$p+k-j-1] - t[k-j-1])
                 d_{$pm1*(j+1)+2} = (1-α)
                 d_{$pm1*(j+1)+3} = α
             end
@@ -346,7 +357,7 @@ end
                 end
                 $dm *= α
                 @nexprs $pm1-r j -> begin
-                    α = (x - t[k-j-1]) / (t[pm1+k-r-j] - t[k-j-1])
+                    α = (x - t[k-j-1]) / (t[$pm1+k-r-j] - t[k-j-1])
                     d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
                     @nexprs r i -> begin
                         d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
@@ -481,39 +492,52 @@ end
 # + 2 + p - k
 
 
-@generated function fill_band!(band::AbstractMatrix{T}, Φ::AbstractMatrix{T},  min_k, max_k, ::Val{p}) where {T,p}
+@generated function fill_band!(band::AbstractMatrix{T}, Φ::Vector{Vector{T}},  min_k, max_k, ::Val{p}) where {T,p}
     m = p + 1
     quote
-        n = size(band,2)
+        n_coef = length(Φ)
         @nexprs $p i -> begin
             minᵢ = min_k[i]
-            for j ∈ $m-i+1:$p
-                jind = i+j-$m
+            Φᵢ = Φ[i]
+            @nexprs i-1 jind -> begin ### jind is the k-place, while j is the band index
+                j = jind + $m - i
                 t = zero(T)
-                for k ∈ minᵢ:max_k[jind]
-                    t += Φ[k,i]*Φ[k,jind]
+                δⱼ = minᵢ - min_k[jind]
+                l = 1 + max_k[jind] - minᵢ
+    #            println("\nl:", l)
+    #            println("Φᵢ length:", length(Φᵢ))
+    #            println("Φ_jind length:", length(Φ[jind]))
+    #            println("δⱼ:", δⱼ)
+    #            println("jind:", jind)
+    #            println("Φ_jind", Φ[jind])
+    #            throw("Lets not keep going.")
+                for k ∈ 1:l
+                    t += Φᵢ[k]*Φ[jind][k+δⱼ]
                 end
                 band[j,i] = t
             end
             t = zero(T)
-            for k ∈ minᵢ:max_k[i]
-                t += abs2(Φ[k,i])
+            for k ∈ eachindex(Φᵢ)
+                t += abs2(Φᵢ[k])
             end
             band[$m,i] = t
         end
-        for i ∈ $m:n
+        for i ∈ $m:n_coef
             minᵢ = min_k[i]
+            Φᵢ = Φ[i]
             @nexprs $p j -> begin
                 jind = i+j-$m
                 t = zero(T)
-                for k ∈ minᵢ:max_k[jind]
-                    t += Φ[k,i]*Φ[k,jind]
+                δⱼ = minᵢ - min_k[jind]
+                l = 1 + max_k[jind] - minᵢ
+                for k ∈ 1:l
+                    t += Φᵢ[k]*Φ[jind][k+δⱼ]
                 end
                 band[j,i] = t
             end
             t = zero(T)
-            for k ∈ minᵢ:max_k[i]
-                t += abs2(Φ[k,i])
+            for k ∈ eachindex(Φᵢ)
+                t += abs2(Φᵢ[k])
             end
             band[$m,i] = t
         end

@@ -103,9 +103,9 @@ function k_structure!(x::AbstractVector, y::AbstractVector, t::Knots, p)
 #    @inbounds for i ∈ 1:n
         new_k = find_k(t, x[i], last_k)
         new_k == last_k || begin
-            for j ∈ old_k:new_k-1
+            for j ∈ last_k:new_k-1
                 min_k[j] = i
-                max_k[j-p] = i - 1
+                max_k[j-p-1] = i - 1
             end
         end
         x_member[i] = new_k

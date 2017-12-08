@@ -2,7 +2,7 @@ __precompile__()
 
 module FDA
 
-using Compat, BandedMatrices, StructsOfArrays, Base.Cartesian
+using Compat, BandedMatrices, SIMD, Base.Cartesian
 
 export  BSpline,
         FourierBasis,

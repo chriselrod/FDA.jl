@@ -89,13 +89,13 @@ end
 end
 @inline Base.getindex(t::DiscreteKnots, i) = t.v[i]
 
-function k_structure!(x::AbstractVector, y::AbstractVector, t::Knots, p)
+function k_structure!(x::AbstractVector, y::AbstractVector, t::Knots, p, β)
     n = length(x)
-    coef_count = t.n + p - 1
+    coef_count = length(β)
     x_member = sortperm(x)
     x .= @view(x[x_member])
     y .= @view(y[x_member])
-    min_k = Vector{Int}(coef_count)
+    min_k = reinterpret(Int, β)
     max_k = Vector{Int}(coef_count)
     last_k = p+2
     min_k[1:p+1] .= 1

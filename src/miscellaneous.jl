@@ -39,13 +39,12 @@ function solve(Xᵗ, y, t::Char = 'N')
     A_mul_B!(β, Xᵗ, y)
     Base.LinAlg.BLAS.symv('U', XᵗXⁱ, Xᵗ * y), Symmetric(XᵗXⁱ)
 end
-function solve!(XᵗXⁱ, XᵗX, X::Vector{Vector{T}}, y, min_k, max_k, ::Val{p}) where {p,T}
+function solve!(XᵗXⁱ, XᵗX, β, X::Vector{Vector{T}}, y, min_k, max_k, ::Val{p}) where {p,T}
     chol!(XᵗX, Val{p}())
     inv!(XᵗXⁱ, XᵗX, Val{p}())###
     triangle_crossprod!(XᵗXⁱ)
     Xᵗy = reinterpret(T, max_k)
     semiband_mul_y!(Xᵗy, X, y, min_k)
-    β = reinterpret(T, min_k)
     Base.LinAlg.BLAS.symv!('L', 1.0, XᵗXⁱ, Xᵗy, 0.0, β)
     β, Xᵗy, Symmetric(XᵗXⁱ, :L)
 end

@@ -80,7 +80,8 @@ end
 
 function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     m = p+1
-    x_member, min_k, max_k = k_structure!(x, y, knots, p)
+    β = Vector{T}(k)
+    x_member, min_k, max_k = k_structure!(x, y, knots, p, β)
     Φᵗ = zeros(promote_type(T, Float64), m, length(x))
     fillΦ_sorted!(Φᵗ, x, knots, x_member)
 #    for i ∈ 1:m

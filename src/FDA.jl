@@ -2,7 +2,7 @@ __precompile__()
 
 module FDA
 
-using Compat, BandedMatrices, SIMD, Base.Cartesian
+using Compat, BandedMatrices, Base.Cartesian, RecipesBase, SIMD
 
 export  BSpline,
         FourierBasis,
@@ -20,6 +20,7 @@ include("basis_splines/evaluate.jl")
 include("basis_splines/error_estimate.jl")
 include("fourier_basis/fourier.jl")
 include("miscellaneous.jl")
+include("plotting.jl")
 
 
 

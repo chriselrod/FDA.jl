@@ -81,17 +81,15 @@ end
 function BSpline(x::Vector{T}, y::Vector{T}, k::Int = div(length(x),10), knots::Knots{p} = CardinalKnots(x, k, Val{3}())) where {T, p}
     m = p+1
     β = Vector{T}(k)
-    x_member, min_k, max_k = k_structure!(x, y, knots, p, β)
+    x_member, min_k, max_k = k_structure!(x, y, knots, p, k)
+
     Φᵗ = zeros(promote_type(T, Float64), m, length(x))
     fillΦ_sorted!(Φᵗ, x, knots, x_member)
-#    for i ∈ 1:m
-#        println(Φᵗ[i,end-11:end])
-#    end
-#    println(sum(Φᵗ,1))
     Φ = jagged_semiband_transpose(Φᵗ, x_member, min_k, max_k, p)
+
     ΦᵗΦ = Array{Float64, 2}(uninitialized, m, k)
     fill_band!(ΦᵗΦ, Φ, min_k, max_k, Val{p}())
-    β, Φᵗy, ΦᵗΦ⁻ = solve!(Array{Float64, 2}(uninitialized, k, k), ΦᵗΦ, Φ, y, min_k, max_k, Val{p}())
+    β, Φᵗy, ΦᵗΦ⁻ = solve!(Array{Float64, 2}(uninitialized, k, k), ΦᵗΦ, β, Φ, y, min_k, max_k, Val{p}())
     BSpline(knots, [β], ΦᵗΦ⁻, Φ, Φᵗ, Φᵗy, y, Val{p}(), k)
 end
 @inline function BSpline(knots::K, coef::Vector{Vector{T}}, S::Symmetric{T,Matrix{T}}, b::Vector{Vector{T}}, Φᵗ, Φᵗy, y, ::Val{p}, k) where {p, K <: Knots{p}, T}

@@ -18,9 +18,13 @@ end
 #julia> d2_fd = ForwardDiff.derivative.(y -> ForwardDiff.derivative(x -> deBoor(x, bs.knots, bs.coefficients[1], Val{3}(), find_k(bs.knots, ForwardDiff.value(ForwardDiff.value(x)))), y), tt);
 
 ###d1 = evaluate(bs, tt, Val{1}())
-function evaluate!(out, s::BSpline{p}, x::AbstractArray, vd::Val{d}) where {p, d}
-    add_derivative_coefs!(s, vd)
+function evaluate!(out, s::BSpline{p}, x::AbstractArray, ::Val{d}) where {p, d}
+    add_derivative_coefs!(s, Val{d}())
     deBoor!(out, x, s.knots, s.coefficients[d+1], value_deriv(Val{p}(), Val{d}()))
+end
+function evaluate(s::BSpline{p}, x::AbstractArray, ::Val{d}) where {p, d}
+    add_derivative_coefs!(s, Val{d}())
+    deBoor!(similar(x), x, s.knots, s.coefficients[d+1], value_deriv(Val{p}(), Val{d}()))
 end
 function evaluate(s::BSpline{p}, x::T, args...) where {T <: Real, p}
     deBoor!(s.buffer, x, s.knots, s.coefficients[1], Val{p}(), find_k(s.knots, x))
@@ -90,8 +94,6 @@ end
         d_1
     end
 end
-
-
 @generated function deBoor!(out::AbstractVector, x::AbstractVector, t::DiscreteKnots{q}, c, Vp::Val{p}) where {q, p}
     m = p + 1
     quote
@@ -118,6 +120,7 @@ end
         for i ∈ eachindex(x)
             xᵢ = x[i]
             k = find_k(t, xᵢ)
+      #      println(k)
             @nexprs $m j -> begin
                 d_{$p+2-j} = c[j+k-$q-2]
             end
@@ -333,42 +336,182 @@ function fillΦ_sorted!(Φᵗ, x, t::DiscreteKnots, x_member)
         fillΦ_flat!(Φᵗ, t, i, x[i], x_member[i])
     end
 end
+function fillΦ_sorted2!(Φᵗ, x, t::DiscreteKnots, x_member)
+    for i ∈ eachindex(x)
+        Φᵗ[:,i] .= fillΦ_flat(t, i, x[i], x_member[i])
+    end
+end
+
 @generated function fillΦ_flat!(out::AbstractMatrix, t::Knots{p}, l::Int, x, k::Int = find_k(t, x)) where p
     pm1 = p - 1
     m = p + 1
     dp = Symbol("d_", p)
     dm = Symbol("d_", m)
     quote
-        @inbounds begin
-            #begin
-            α = (x - t[k-1]) / (t[$pm1+k] - t[k-1])
-            $dp = 1-α
-            $dm = α
-            @nexprs $pm1 j -> begin
-                α = (x - t[k-j-1]) / (t[$p+k-j-1] - t[k-j-1])
-                d_{$pm1*(j+1)+2} = (1-α)
-                d_{$pm1*(j+1)+3} = α
+        @inbounds α = (x - t[k-1]) / (t[$pm1+k] - t[k-1])
+        $dp = 1-α
+        $dm = α
+        @nexprs $pm1 j -> begin
+            @inbounds α = (x - t[k-j-1]) / (t[$p+k-j-1] - t[k-j-1])
+            d_{$pm1*(j+1)+2} = (1-α)
+            d_{$pm1*(j+1)+3} = α
+        end
+        @nexprs $pm1 r -> begin
+            @inbounds α = (x - t[k-1]) / (t[$pm1+k-r] - t[k-1])
+            d_{$p-r} = (1-α)*d_{$m+$p-r}
+            @nexprs r i -> begin
+                d_{i+$p-r} = (1-α)*d_{$m+i+$p-r} + α*d_{i+$p-r}
             end
-            @nexprs $pm1 r -> begin
-                α = (x - t[k-1]) / (t[$pm1+k-r] - t[k-1])
-                d_{$p-r} = (1-α)*d_{$m+$p-r}
+            $dm *= α
+            @nexprs $pm1-r j -> begin
+                @inbounds α = (x - t[k-j-1]) / (t[$pm1+k-r-j] - t[k-j-1])
+                d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
                 @nexprs r i -> begin
-                    d_{i+$p-r} = (1-α)*d_{$m+i+$p-r} + α*d_{i+$p-r}
+                    d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
                 end
-                $dm *= α
-                @nexprs $pm1-r j -> begin
-                    α = (x - t[k-j-1]) / (t[$pm1+k-r-j] - t[k-j-1])
-                    d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
-                    @nexprs r i -> begin
-                        d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
-                    end
-                    d_{$pm1*j+1+$m} *= α
-                end
-            end
-            @nexprs $m i -> begin
-                out[i,l] = d_{i}
+                d_{$pm1*j+1+$m} *= α
             end
         end
+        @nexprs $m i -> begin
+            @inbounds out[i,l] = d_{i}
+        end
+    end
+end
+@generated function fillΦ_flat(t::Knots{p}, l::Int, x, k::Int = find_k(t, x)) where p
+    pm1 = p - 1
+    m = p + 1
+    dp = Symbol("d_", p)
+    dm = Symbol("d_", m)
+    quote
+        @inbounds α = (x - t[k-1]) / (t[$pm1+k] - t[k-1])
+        $dp = 1-α
+        $dm = α
+        @nexprs $pm1 j -> begin
+            @inbounds α = (x - t[k-j-1]) / (t[$p+k-j-1] - t[k-j-1])
+            d_{$pm1*(j+1)+2} = (1-α)
+            d_{$pm1*(j+1)+3} = α
+        end
+        @nexprs $pm1 r -> begin
+            @inbounds α = (x - t[k-1]) / (t[$pm1+k-r] - t[k-1])
+            d_{$p-r} = (1-α)*d_{$m+$p-r}
+            @nexprs r i -> begin
+                d_{i+$p-r} = (1-α)*d_{$m+i+$p-r} + α*d_{i+$p-r}
+            end
+            $dm *= α
+            @nexprs $pm1-r j -> begin
+                @inbounds α = (x - t[k-j-1]) / (t[$pm1+k-r-j] - t[k-j-1])
+                d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
+                @nexprs r i -> begin
+                    d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
+                end
+                d_{$pm1*j+1+$m} *= α
+            end
+        end
+        @ntuple $m i -> d_{i}
+    end
+end
+@generated function fillΦ_flat!(out::AbstractMatrix, t::Knots{p}, l::Int, x, ::Val{d}, k::Int = find_k(t, x)) where {p,d}
+    pm1 = p - 1
+    pmd = p - d
+    pm1md = pm1-d
+    m = p + 1
+    dp = Symbol("d_", p)
+    dm = Symbol("d_", m)
+    quote
+        @inbounds α = (x - t[k-1]) / (t[$pm1+k] - t[k-1])
+        $dp = 1-α
+        $dm = α
+        @nexprs $pm1 j -> begin
+            @inbounds α = (x - t[k-j-1]) / (t[$p+k-j-1] - t[k-j-1])
+            d_{$pm1*(j+1)+2} = (1-α)
+            d_{$pm1*(j+1)+3} = α
+        end
+        @nexprs $pm1md r -> begin
+            @inbounds α = (x - t[k-1]) / (t[$pm1+k-r] - t[k-1])
+            d_{$p-r} = (1-α)*d_{$m+$p-r}
+            @nexprs r i -> begin
+                d_{i+$p-r} = (1-α)*d_{$m+i+$p-r} + α*d_{i+$p-r}
+            end
+            $dm *= α
+            @nexprs $pm1-r j -> begin
+                @inbounds α = (x - t[k-j-1]) / (t[$pm1+k-r-j] - t[k-j-1])
+                d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
+                @nexprs r i -> begin
+                    d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
+                end
+                d_{$pm1*j+1+$m} *= α
+            end
+        end
+        @nexprs $d r -> begin
+            @inbounds α = ( $pmd + r ) / (t[$d+k-r] - t[k-1])
+            d_{$p-r-$pm1md} = -α*d_{$m+$p-r-$pm1md}
+            @nexprs r+$pm1md i -> begin
+                d_{i+$p-r-$pm1md} = -α*d_{$m+i+$p-r-$pm1md} + α*d_{i+$p-r-$pm1md}
+            end
+            $dm *= α
+            @nexprs $pm1-r-$pm1md j -> begin
+                @inbounds α = ( $pmd + r ) / (t[$pm1+k-r-$pm1md-j] - t[k-j-1])
+                d_{$pm1*j-r-$pm1md+$m} = -α*d_{$pm1*(j+1)+1-r-$pm1md+$m}
+                @nexprs r+$pm1md i -> begin
+                    d_{i-r-$pm1md+j*$pm1+$m} = α*d_{i-r-$pm1md+j*$pm1+$m} + -α*d_{i+1-r-$pm1md+(j+1)*$pm1+$m}
+                end
+                d_{$pm1*j+1+$m} *= α
+            end
+        end
+        @nexprs $m i -> begin
+            @inbounds out[i,l] = d_{i}
+        end
+    end
+end
+@generated function fillΦ_flat(t::Knots{p}, l::Int, x, ::Val{d}, k::Int = find_k(t, x)) where {p,d}
+    pm1 = p - 1
+    pmd = p - d
+    pm1md = pm1-d
+    m = p + 1
+    dp = Symbol("d_", p)
+    dm = Symbol("d_", m)
+    quote
+        @inbounds α = (x - t[k-1]) / (t[$pm1+k] - t[k-1])
+        $dp = 1-α
+        $dm = α
+        @nexprs $pm1 j -> begin
+            @inbounds α = (x - t[k-j-1]) / (t[$p+k-j-1] - t[k-j-1])
+            d_{$pm1*(j+1)+2} = (1-α)
+            d_{$pm1*(j+1)+3} = α
+        end
+        @nexprs $pm1md r -> begin
+            @inbounds α = (x - t[k-1]) / (t[$pm1+k-r] - t[k-1])
+            d_{$p-r} = (1-α)*d_{$m+$p-r}
+            @nexprs r i -> begin
+                d_{i+$p-r} = (1-α)*d_{$m+i+$p-r} + α*d_{i+$p-r}
+            end
+            $dm *= α
+            @nexprs $pm1-r j -> begin
+                @inbounds α = (x - t[k-j-1]) / (t[$pm1+k-r-j] - t[k-j-1])
+                d_{$pm1*j-r+$m} = (1-α)*d_{$pm1*(j+1)+1-r+$m}
+                @nexprs r i -> begin
+                    d_{i-r+j*$pm1+$m} = α*d_{i-r+j*$pm1+$m} + (1-α)*d_{i+1-r+(j+1)*$pm1+$m}
+                end
+                d_{$pm1*j+1+$m} *= α
+            end
+        end
+        @nexprs $d r -> begin
+            @inbounds α = ( $pmd + r ) / (t[$d+k-r] - t[k-1])
+            d_{$p-r-$pm1md} = -α*d_{$m+$p-r-$pm1md}
+            @nexprs r+$pm1md i -> begin
+                d_{i+$p-r-$pm1md} = -α*d_{$m+i+$p-r-$pm1md} + α*d_{i+$p-r-$pm1md}
+            end
+            $dm *= α
+            @nexprs $pm1-r-$pm1md j -> begin
+                @inbounds α = ( $pmd + r ) / (t[$pm1+k-r-$pm1md-j] - t[k-j-1])
+                d_{$pm1*j-r-$pm1md+$m} = -α*d_{$pm1*(j+1)+1-r-$pm1md+$m}
+                @nexprs r+$pm1md i -> begin
+                    d_{i-r-$pm1md+j*$pm1+$m} = α*d_{i-r-$pm1md+j*$pm1+$m} + -α*d_{i+1-r-$pm1md+(j+1)*$pm1+$m}
+                end
+                d_{$pm1*j+1+$m} *= α
+            end
+        end
+        @ntuple $m i -> d_{i}
     end
 end
 

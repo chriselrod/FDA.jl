@@ -40,10 +40,12 @@ function solve(Xᵗ, y, t::Char = 'N')
     Base.LinAlg.BLAS.symv('U', XᵗXⁱ, Xᵗ * y), Symmetric(XᵗXⁱ)
 end
 function solve!(XᵗXⁱ, XᵗX, β, X::Vector{Vector{T}}, y, min_k, max_k, ::Val{p}) where {p,T}
+#    BandedMatrices.pbtrf!('U', size(XᵗX,2), p, pointer(XᵗX), p+1)
     chol!(XᵗX, Val{p}())
     inv!(XᵗXⁱ, XᵗX, Val{p}())###
     triangle_crossprod!(XᵗXⁱ)
-    Xᵗy = reinterpret(T, max_k)
+#    Xᵗy = reinterpret(T, max_k)
+    Xᵗy = similar(β)
     semiband_mul_y!(Xᵗy, X, y, min_k)
     Base.LinAlg.BLAS.symv!('L', 1.0, XᵗXⁱ, Xᵗy, 0.0, β)
     β, Xᵗy, Symmetric(XᵗXⁱ, :L)
@@ -69,16 +71,16 @@ function triangle_crossprod!(A::AbstractMatrix{T}) where T
     n = size(A,1)
     @inbounds for i ∈ 1:n
         temp = zero(T)
-        for k ∈ i:n
+        @inbounds for k ∈ i:n
             temp += abs2(A[k,i])
         end
-        A[i,i] = temp
+        @inbounds A[i,i] = temp
         for j ∈ i+1:n
             temp = zero(T)
-            for k ∈ j:n
+            @inbounds for k ∈ j:n
                 temp += A[k,j] * A[k,i]
             end
-            A[j,i] = temp
+            @inbounds A[j,i] = temp
         end
     end
 end
@@ -126,18 +128,21 @@ end
     quote
     #    @inbounds for i ∈ 1:size(U,2)
         @nexprs $p i -> begin
-            Uᵢᵢ = U[$m,i]
+            @inbounds Uᵢᵢ = U[$m,i]
             @nexprs i-1 l -> begin
                 j = l - i + $m
-                Uⱼᵢ = U[j,i]
+                @inbounds Uⱼᵢ = U[j,i]
+#                @simd for k ∈  1:l-1
+#                    @inbounds Uⱼᵢ -= U[k-i+$m,i] * U[k-l+$m,l]
+#                end
                 @nexprs l-1 k -> begin
-                    Uⱼᵢ -= U[k-i+$m,i] * U[k-l+$m,l]
+                    @inbounds Uⱼᵢ -= U[k-i+$m,i] * U[k-l+$m,l]
                 end
-                Uⱼᵢ /= U[$m,l]
+                @inbounds Uⱼᵢ /= U[$m,l]
                 Uᵢᵢ -= Uⱼᵢ^2
-                U[j,i] = Uⱼᵢ
+                @inbounds U[j,i] = Uⱼᵢ
             end
-            U[$m,i] = √Uᵢᵢ
+            @inbounds U[$m,i] = √Uᵢᵢ
         end
 
         for i ∈ $m:size(U,2)
@@ -145,15 +150,25 @@ end
             Uᵢᵢ = U[$m,i]
             @nexprs $p j -> begin
                 l = j + i - $m
-                Uⱼᵢ = U[j,i]
+                @inbounds Uⱼᵢ = U[j,i]
+#                @simd for k ∈  1:j-1
+#                    @inbounds Uⱼᵢ -= U[k,i] * U[k-j+$m,l]
+#                end
                 @nexprs j-1 k -> begin
-                    Uⱼᵢ -= U[k,i] * U[k-j+$m,l]
+                    @inbounds Uⱼᵢ -= U[k,i] * U[k-j+$m,l]
                 end
-                Uⱼᵢ /= U[$m,l]
+        #        if j == 2
+        #            Uⱼᵢ -= U[1,i] * U[$p,l]
+        #        elseif j > 2
+        #            @inbounds Uⱼᵢ -= sum( SIMD.Vec{j-1,T}( ( @ntuple j-1 k -> U[k,i] ) ) * SIMD.Vec{j-1,T}( ( @ntuple j-1 k -> U[k-j+$m,l] ) )  )
+        #        end
+        ##        vload(Vec{j-1,T}, U, k + $m*(i-1))
+        ##        vload(Vec{j-1,T}, U, k-j+$m + $m*(l-1))
+                @inbounds Uⱼᵢ /= U[$m,l]
                 Uᵢᵢ -= Uⱼᵢ^2
-                U[j,i] = Uⱼᵢ
+                @inbounds U[j,i] = Uⱼᵢ
             end
-            U[$m,i] = √Uᵢᵢ
+            @inbounds U[$m,i] = √Uᵢᵢ
         end
     end
 end
@@ -163,21 +178,21 @@ end
     quote
         n = size(A,1)
         @inbounds for i ∈ 1:n-$p
-            A[i,i] = 1 / U[$m,i]
+            @inbounds A[i,i] = 1 / U[$m,i]
             @nexprs $p l -> begin
                 j = l+i
                 Aⱼᵢ = zero(T)
                 @simd for k ∈ i:j-1
-                    Aⱼᵢ += U[k+$m-j,j] * A[k,i]
+                    @inbounds Aⱼᵢ += U[k+$m-j,j] * A[k,i]
                 end
-                A[j,i] = - Aⱼᵢ / U[$m,j]
+                @inbounds A[j,i] = - Aⱼᵢ / U[$m,j]
             end
             for j ∈ i+$m:n
                 Aⱼᵢ = zero(T)
                 @simd for k ∈ 1:$p
-                    Aⱼᵢ += U[k,j] * A[k+j-$m,i]
+                    @inbounds Aⱼᵢ += U[k,j] * A[k+j-$m,i]
                 end
-                A[j,i] = - Aⱼᵢ / U[$m,j]
+                @inbounds A[j,i] = - Aⱼᵢ / U[$m,j]
             end
         end
         @nexprs $p l -> begin
@@ -186,9 +201,9 @@ end
             @inbounds for j ∈ i+1:n
                 Aⱼᵢ = zero(T)
                 @simd for k ∈ i:j-1
-                    Aⱼᵢ += U[k+$m-j,j] * A[k,i]
+                    @inbounds Aⱼᵢ += U[k+$m-j,j] * A[k,i]
                 end
-                A[j,i] = - Aⱼᵢ / U[$m,j]
+                @inbounds A[j,i] = - Aⱼᵢ / U[$m,j]
             end
         end
         A
